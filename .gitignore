@@ -1,0 +1,15 @@
+# R project files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Temporary files
+*.csv
+*.tsv
+*.xlsx
+
+# MacOS files
+.DS_Store
+.AppleDouble
+.LSOverride
