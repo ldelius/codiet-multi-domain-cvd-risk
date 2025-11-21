@@ -62,7 +62,7 @@ maindata_keep <- df_maindata %>%
   ) %>%
   select(
     PatientID, Sex, EthnicityCodeQRISK3, SmokingStatusQRISK3, diabetes2, Weight_kg,
-    Height_cm, blood_pressure_treatment, Severe_mental_illness, atrial_fibrillation 
+    Height_cm, blood_pressure_treatment, Severe_mental_illness 
   )
 
 blood_pressure_keep <- df_Blood_Pressure %>%
@@ -92,8 +92,7 @@ QRISK3 <- data.frame(
                     gender = if_else(qrisk_input$Sex == "Female", 1,
                       if_else(qrisk_input$Sex == "Male", 0, NA_integer_)),
                      age = qrisk_input$Age,
-                     b_AF = if_else(qrisk_input$atrial_fibrillation == "Yes", 1, 0),
-                     b_atypicalantipsy = 0, b_corticosteroids = 0,
+                     b_AF = 0, b_atypicalantipsy = 0, b_corticosteroids = 0,
                      b_impotence2 = 0, b_migraine = 0, b_ra = 0, b_renal = 0,
                      b_semi = if_else(qrisk_input$Severe_mental_illness == "Yes", 1, 0),
                      b_sle = 0,
