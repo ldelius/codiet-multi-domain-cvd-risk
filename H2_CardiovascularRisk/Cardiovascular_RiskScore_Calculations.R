@@ -109,7 +109,6 @@ Framingham <- data.frame(
     )
   ) # must be between 30 and 74 for Framingham
 
-unique(tolower(risk_factor_input$Sex))
 
 ### checking distribution and mean of Framingham score
 # Histogram + density for Framingham scores
@@ -142,3 +141,57 @@ summary(Framingham$frs_10y)
 
 ##---------------------------------------------------------------------##
 ## 2. ASCVD Score
+ASCVD <- data.frame(
+  race    = risk_factor_input$race_ascvd,   # "white", "aa", "other"
+  gender  = tolower(risk_factor_input$Sex),
+  age     = risk_factor_input$Age,
+  hdl     = risk_factor_input$mean_HDL_mg_dl,
+  totchol = risk_factor_input$mean_Total_Cholesterol_mg_dl,
+  sbp     = risk_factor_input$systolic,
+  bp_med  = risk_factor_input$blood_pressure_treatment,
+  smoker  = risk_factor_input$SmokingStatusQRISK3,
+  diabetes = risk_factor_input$Diabetes
+) %>%
+  filter(!if_any(everything(), is.na)) %>%    # cannot have NA values
+  filter(age >= 40 & age <= 79) %>%           # age range according to website
+  mutate(
+    ascvd_10y = ascvd_10y_accaha(
+      race, gender, age, totchol, hdl, sbp, bp_med, smoker, diabetes
+    )
+  )
+
+# just checking the people that got excluded because they have values outside specific ranges
+ASCVD %>%
+  filter(is.na(ascvd_10y)) %>%
+  select(age, totchol, hdl, sbp)
+
+### checking distribution and mean of ASCVD score
+# Histogram + density for ASCVD scores
+ggplot(ASCVD, aes(x = ascvd_10y)) +
+  geom_histogram( # create the normal histogram
+    bins = 20,
+    fill = "lightblue",
+    color = "white"
+  ) + 
+  labs( # create the titles 
+    title = "Distribution of ASCVD Scores",
+    subtitle = paste("Mean =", round(mean(ASCVD$ascvd_10y, na.rm = TRUE), 2), "%"),
+    x = "10-year cardiovascular risk (%)",
+    y = "Number of participants"
+  ) +
+  geom_density( # distribution
+    aes(y = ..density.. * nrow(ASCVD) * 
+          diff(range(ASCVD$ascvd_10y, na.rm = TRUE)) / 20),
+    color = "darkblue",
+    size = 1.2
+  ) +
+  geom_vline(
+    aes(xintercept = mean(ascvd_10y, na.rm = TRUE)), # mean ASCVD value
+    color = "red", linetype = "dashed", size = 1
+  )
+
+# Statistics for the ASCVD distribution
+shapiro.test(ASCVD$ascvd_10y)  # normality test
+summary(ASCVD$ascvd_10y)
+##---------------------------------------------------------------------##
+## 3. SCORE2
