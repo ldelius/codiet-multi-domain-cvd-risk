@@ -120,7 +120,8 @@ ggplot(Framingham, aes(x = frs_10y)) +
   ) + 
   labs( # create the titles 
     title = "Distribution of Framingham Scores",
-    subtitle = paste("Mean =", round(mean(Framingham$frs_10y, na.rm = TRUE), 2), "%"),
+    subtitle = paste("Mean =", round(mean(Framingham$frs_10y, na.rm = TRUE), 2), "%",
+    "| N =", nrow(Framingham)),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
@@ -175,7 +176,8 @@ ggplot(ASCVD, aes(x = ascvd_10y)) +
   ) + 
   labs( # create the titles 
     title = "Distribution of ASCVD Scores",
-    subtitle = paste("Mean =", round(mean(ASCVD$ascvd_10y, na.rm = TRUE), 2), "%"),
+    subtitle = paste("Mean =", round(mean(ASCVD$ascvd_10y, na.rm = TRUE), 2), "%",
+    "| N =", nrow(ASCVD)),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
