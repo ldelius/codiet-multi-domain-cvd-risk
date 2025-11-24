@@ -32,7 +32,8 @@ df_maindata <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet =
 df_Cholesterol_HDL  <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Cholesterol_HDL")
 df_Blood_Pressure     <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Blood_Pressure")
 df_age_risk_factor_sheet <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Age_risk_factor_sheet")
-
+df_risk_region <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Risk_region")
+  
 # cleaning the data, so that it can be used for risk score calculations
 ## working on blood_pressure: change to SampleID, - to _, ...
 blood_pressure_keep <- df_Blood_Pressure %>%
@@ -83,11 +84,24 @@ maindata_keep <- df_maindata %>%
     PatientID, Sex, race_ascvd, SmokingStatusQRISK3, Diabetes, blood_pressure_treatment 
   )
 
+risk_region_keep <- df_risk_region %>%
+  rename(PatientID = volunteer_id) %>%   # make the ID name consistent
+  mutate(
+    PatientID = str_replace_all(PatientID, "-", "_"),
+    Risk.region = case_when(
+      recruitment_site %in% c("CBG", "ICL") ~ "low",
+      recruitment_site %in% c("CORK", "AUTH", "UVEG") ~ "moderate",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(PatientID, Risk.region)    # keep only the relevant columns
+
 ## combining the cleaned data
 risk_factor_input <- maindata_keep %>%
   full_join(lipids_keep, by = "PatientID") %>%
   full_join(blood_pressure_keep, by = "PatientID") %>%
-  full_join(patient_age, by = "PatientID")
+  full_join(patient_age, by = "PatientID") %>%
+  full_join(risk_region_keep, by = "PatientID")
 
 ###################### Risk score calulations ######################
 ## 1. Framingham Score
@@ -197,3 +211,80 @@ shapiro.test(ASCVD$ascvd_10y)  # normality test
 summary(ASCVD$ascvd_10y)
 ##---------------------------------------------------------------------##
 ## 3. SCORE2
+SCORE2_input <- data.frame(
+  PatientID   = risk_factor_input$PatientID,
+  Gender  = tolower(risk_factor_input$Sex),
+  Age     = risk_factor_input$Age,
+  smoker  = risk_factor_input$SmokingStatusQRISK3,
+  systolic.bp = risk_factor_input$systolic,
+  diabetes = risk_factor_input$Diabetes,
+  total.chol = risk_factor_input$mean_Total_Cholesterol_mg_dl * 0.02586,
+  total.hdl	= risk_factor_input$mean_HDL_mg_dl * 0.02586,
+  region  = risk_factor_input$Risk.region
+) %>%
+  filter(!if_any(everything(), is.na)) %>%
+  filter(Age >= 40 & Age <= 69)
+
+# Calculate for LOW region
+df_low <- SCORE2_input %>% filter(region == "low")
+
+scores_low <- SCORE2_scores(
+  data        = df_low %>% select(Age, Gender, smoker,
+                                  systolic.bp, diabetes,
+                                  total.chol, total.hdl),
+  Risk.region = "Low",
+  classify    = TRUE
+)
+
+df_low_res <- bind_cols(df_low, scores_low)
+
+# Calculate for MODERATE region
+df_mod <- SCORE2_input %>% filter(region == "moderate")
+
+scores_mod <- SCORE2_scores(
+  data        = df_mod %>% select(Age, Gender, smoker,
+                                  systolic.bp, diabetes,
+                                  total.chol, total.hdl),
+  Risk.region = "Moderate",  # MUST be capitalized
+  classify    = TRUE
+)
+
+df_mod_res <- bind_cols(df_mod, scores_mod)
+
+# combine the scores and PatientID
+SCORE2 <- bind_rows(df_low_res, df_mod_res) %>%
+  select(PatientID, starts_with("SCORE2"))
+
+### checking distribution and mean of SCORE2 
+# Histogram + density for SCORE2
+ggplot(SCORE2, aes(x = SCORE2_score)) +
+  geom_histogram(
+    bins = 20,
+    fill = "lightblue",
+    color = "white"
+  ) + 
+  labs(
+    title = "Distribution of SCORE2 10-year Risk",
+    subtitle = paste(
+      "Mean =", round(mean(SCORE2$SCORE2_score, na.rm = TRUE), 2), "%",
+      "| N =", nrow(SCORE2)
+    ),
+    x = "10-year cardiovascular risk (%)",
+    y = "Number of participants"
+  ) +
+  geom_density(
+    aes(y = ..density.. * nrow(SCORE2) *
+          diff(range(SCORE2$SCORE2_score, na.rm = TRUE)) / 20),
+    color = "darkblue",
+    size = 1.2
+  ) +
+  geom_vline(
+    aes(xintercept = mean(SCORE2_score, na.rm = TRUE)),
+    color = "red", linetype = "dashed", size = 1
+  )
+
+
+# Statistics for the SCORE2 distribution
+shapiro.test(SCORE2$SCORE2_score)   # normality test
+summary(SCORE2$SCORE2_score)        # summary stats
+##---------------------------------------------------------------------##
