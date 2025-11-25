@@ -5,6 +5,7 @@
 # 1. Framingham score
 # 2. ASCVD
 # 3. SCORE2
+# 4. Combine the results
 
 # Load packages
 library(tidyverse)
@@ -33,6 +34,7 @@ df_Cholesterol_HDL  <- read_excel("cardiovascular_riskfactor_calculations.xlsx",
 df_Blood_Pressure     <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Blood_Pressure")
 df_age_risk_factor_sheet <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Age_risk_factor_sheet")
 df_risk_region <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Risk_region")
+QRISK3_sample_ID <- readRDS("QRISK3_sample_ID.RDS") ### this has to be exchanged if i change anything of the QRISK input data of courese!!!
   
 # cleaning the data, so that it can be used for risk score calculations
 ## working on blood_pressure: change to SampleID, - to _, ...
@@ -106,6 +108,7 @@ risk_factor_input <- maindata_keep %>%
 ###################### Risk score calulations ######################
 ## 1. Framingham Score
 Framingham <- data.frame(
+  PatientID = risk_factor_input$PatientID,
   gender = tolower(risk_factor_input$Sex),
   age = risk_factor_input$Age,
   hdl = risk_factor_input$mean_HDL_mg_dl,
@@ -157,6 +160,7 @@ summary(Framingham$frs_10y)
 ##---------------------------------------------------------------------##
 ## 2. ASCVD Score
 ASCVD <- data.frame(
+  PatientID = risk_factor_input$PatientID,
   race    = risk_factor_input$race_ascvd,   # "white", "aa", "other"
   gender  = tolower(risk_factor_input$Sex),
   age     = risk_factor_input$Age,
@@ -288,3 +292,57 @@ ggplot(SCORE2, aes(x = SCORE2_score)) +
 shapiro.test(SCORE2$SCORE2_score)   # normality test
 summary(SCORE2$SCORE2_score)        # summary stats
 ##---------------------------------------------------------------------##
+
+# 4. Combine the results
+## create a joint data frame
+df_all_risk_scores <- SCORE2 %>%
+  full_join(ASCVD %>% select(PatientID, ascvd_10y), by = "PatientID") %>%
+  full_join(Framingham %>% select(PatientID, frs_10y),by = "PatientID") %>%
+  full_join(QRISK3_sample_ID %>% rename(PatientID = Sample_ID), by = "PatientID")
+
+## plotting the risk scores
+df_long <- df_all_risk_scores %>%
+  pivot_longer(
+    cols = c(SCORE2_score, ascvd_10y, frs_10y, QRISK3_2017),
+    names_to = "score_type",
+    values_to = "risk"
+  ) %>%
+  select(PatientID, score_type, risk)
+
+
+ggplot(df_long, aes(x = score_type, y = risk)) +
+  # 1. violins (overall distribution)
+  geom_violin(aes(fill = score_type), alpha = 0.4, colour = NA) +
+  
+  # 2. boxplot (median + IQR)
+  geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
+  
+  # 3. patient lines (connects a patient's scores)
+  geom_line(aes(group = PatientID), colour = "black", alpha = 0.25) +
+  
+  # 4. dots (individual values)
+  geom_point(size = 1.5, alpha = 0.7) +
+  
+  # change legend
+  scale_fill_discrete(
+    labels = c(
+      "SCORE2_score" = "SCORE2",
+      "QRISK3_2017"  = "QRISK3",
+      "ascvd_10y"    = "ASCVD",
+      "frs_10y"      = "Framingham"
+    )
+  ) +
+  
+  labs(
+    title = "Cardiovascular Risk Scores per Patient",
+    x = "Score Type",
+    y = "10-year Risk (%)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 25, hjust = 1)
+  )
+
+
+
