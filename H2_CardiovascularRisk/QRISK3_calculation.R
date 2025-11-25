@@ -7,6 +7,7 @@ library(broom)
 library(patchwork)
 library(QRISK3)
 library(readxl)
+library(QDiabetes)
 
 # Set working directory
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files"
@@ -19,6 +20,8 @@ df_maindata <- read_excel("QRISK3_data.xlsx", sheet = "Sheet1")
 df_Cholesterol_HDL  <- read_excel("QRISK3_data.xlsx", sheet = "Cholesterol_HDL")
 df_Blood_Pressure     <- read_excel("QRISK3_data.xlsx", sheet = "Blood_Pressure")
 df_age_risk_factor_sheet <- read_excel("QRISK3_data.xlsx", sheet = "Age_risk_factor_sheet")
+df_UK_postcodes <- read_excel(path = "cardiovascular_riskfactor_calculations.xlsx", sheet = "Risk_region")
+
 
 names(df_Cholesterol_HDL) # gives you column titles 
 glimpse(df_Cholesterol_HDL)
@@ -53,6 +56,20 @@ patient_age <- df_age_risk_factor_sheet %>%
   ungroup() # not needed, but i will keep it after every group to not forget about it.
   
 
+# Step 1.3 Calculate townsend score for ICL participants
+put_TDS_or_NA <- function(postcode) {
+  tryCatch(getTDS(postcode), error = function(e) NA_real_)
+}
+
+df_townsend <- df_UK_postcodes %>%
+  rename(PatientID = volunteer_id) %>%   # unify ID naming
+  mutate(
+    PatientID = str_replace_all(PatientID, "-", "_"),     
+    postcodes = str_trim(as.character(postcodes)),        # clean postcode
+    townsend = sapply(postcodes, put_TDS_or_NA)           # Townsend or NA
+  )
+
+
 # Step 2: Prepare everything for joining to one dataframe with all the information
 ## create same key for joining & keep only the coulmns wanted for joining
 maindata_keep <- df_maindata %>%
@@ -64,6 +81,7 @@ maindata_keep <- df_maindata %>%
     PatientID, Sex, EthnicityCodeQRISK3, SmokingStatusQRISK3, diabetes2, Weight_kg,
     Height_cm, blood_pressure_treatment, Severe_mental_illness 
   )
+
 
 blood_pressure_keep <- df_Blood_Pressure %>%
   rename(PatientID = patient) %>%   # make the ID name consistent
@@ -84,8 +102,9 @@ lipids_by_patient_keep <- lipids_by_patient %>%
 qrisk_input <- maindata_keep %>%
   full_join(lipids_by_patient_keep, by = "PatientID") %>%
   full_join(blood_pressure_keep, by = "PatientID") %>%
-  full_join(patient_age, by = "PatientID")
-  
+  full_join(patient_age, by = "PatientID") %>%
+  full_join(df_townsend %>% select(PatientID, townsend), by = "PatientID")
+
 
 # Create dataframe to calculate QRISK3 (every condition gets their values assigned)
 QRISK3 <- data.frame(
@@ -107,8 +126,8 @@ QRISK3 <- data.frame(
                      sbp  = qrisk_input$systolic,
                      sbps5 = 10,
                      smoke_cat = qrisk_input$SmokingStatusQRISK3,
-                     town = 0,
-                     Sample_ID = qrisk_input$PatientID) %>%
+                    town = ifelse(is.na(qrisk_input$townsend), 0, qrisk_input$townsend),
+                    Sample_ID = qrisk_input$PatientID) %>%
   mutate(ID = rownames(.)) %>% ## in der QRISK df starten die IDs bei 2, weil ich in der nächsten Zeile die erste Zeile wegen einem NA raugeschmissen habe.
   filter(!if_any(everything(), is.na)) %>% # cannot have NA values
   filter(age >= 25 & age <= 84) # must be between 25 and 84
@@ -145,7 +164,8 @@ ggplot(QRISK3_sample_ID, aes(x = QRISK3_2017)) +
   ) + 
   labs( # create the titles 
     title = "Distribution of QRISK3 Scores",
-    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_2017, na.rm = TRUE), 2), "%"),
+    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_2017, na.rm = TRUE), 2), "%",
+    "| N =", nrow(QRISK3_sample_ID)),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"   )+
   geom_density( # distribution
