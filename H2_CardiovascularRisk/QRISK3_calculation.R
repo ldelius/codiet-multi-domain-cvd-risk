@@ -247,6 +247,14 @@ df_patient_risk_for_lm <- df_patient_risk %>%
     .groups = "drop"
   )
 
+# Step 3: "Ensure the Urine tPred scores are going in the right direction.
+# Phenylacetylglutamine score (animal protein) and O-Acetylcarnitine score (red meat) should be negative;
+# everything else should be positive" --> therefore i am flipping those two around.
+df_patient_risk_for_lm <- df_patient_risk_for_lm %>%
+mutate(
+  Phenylacetylglutamine = -Phenylacetylglutamine,
+  `O-Acetylcarnitine`   = -`O-Acetylcarnitine`
+)
 
 ################------------ outlier removal------------------##################
 # removing outlier outside 1%/99% 
@@ -288,8 +296,8 @@ outlier_summary
 ##############------------------outlier removal end---------------###################
 
 # add the QRISK3_2017 results to the df with risk_factors
-df_patient_risk_for_lm <- df_patient_risk_trimmed %>%
-  rename(Sample_ID = PatientID) %>%
+df_patient_risk_for_lm <- df_patient_risk_for_lm %>%
+  #rename(Sample_ID = PatientID) %>%
   inner_join(QRISK3_sample_ID, by = "Sample_ID")
 
 df_patient_risk_for_lm %>%
