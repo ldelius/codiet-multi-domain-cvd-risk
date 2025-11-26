@@ -195,7 +195,8 @@ ggplot(ASCVD, aes(x = ascvd_10y)) +
   labs( # create the titles 
     title = "Distribution of ASCVD Scores",
     subtitle = paste("Mean =", round(mean(ASCVD$ascvd_10y, na.rm = TRUE), 2), "%",
-    "| N =", nrow(ASCVD)),
+    "| N =", sum(!is.na(ASCVD$ascvd_10y))
+    ),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
@@ -405,6 +406,7 @@ as.data.frame(cor_kendall) %>% # convert the matrix into a dataframe so tidyvers
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(title = "Kendall Correlation Between Cardiovascular Risk Scores",
        x = "", y = "")
+
 
 
 
