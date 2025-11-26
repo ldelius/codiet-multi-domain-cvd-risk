@@ -298,9 +298,41 @@ summary(SCORE2$SCORE2_score)        # summary stats
 df_all_risk_scores <- SCORE2 %>%
   full_join(ASCVD %>% select(PatientID, ascvd_10y), by = "PatientID") %>%
   full_join(Framingham %>% select(PatientID, frs_10y),by = "PatientID") %>%
-  full_join(QRISK3_sample_ID %>% rename(PatientID = Sample_ID), by = "PatientID")
+  full_join(QRISK3_sample_ID %>% rename(PatientID = Sample_ID), by = "PatientID") %>%
+  mutate(mean_risk = rowMeans( #calculate an average value for each patient --> composite score
+    select(., SCORE2_score, ascvd_10y, frs_10y, QRISK3_2017),
+    na.rm = TRUE
+  ))
 
-## plotting the risk scores
+## histogram of the composite risk score
+ggplot(df_all_risk_scores, aes(x = mean_risk)) +
+  geom_histogram(
+    bins = 20,
+    fill = "lightblue",
+    color = "white"
+  ) + 
+  labs(
+    title = "Distribution of Composite Cardiovascular Risk Score",
+    subtitle = paste(
+      "Mean =", round(mean(df_all_risk_scores$mean_risk, na.rm = TRUE), 2), "%",
+      "| N =", sum(!is.na(df_all_risk_scores$mean_risk))
+    ),
+    x = "Composite 10-year cardiovascular risk (%)",
+    y = "Number of participants"
+  ) +
+    geom_density(
+      aes(y = ..density.. * nrow(df_all_risk_scores) *
+            diff(range(df_all_risk_scores$mean_risk, na.rm = TRUE)) / 20),
+      color = "darkblue",
+      size = 1.2
+  ) +
+  geom_vline(
+    aes(xintercept = mean(mean_risk, na.rm = TRUE)),
+    color = "red", linetype = "dashed", size = 1
+  )
+
+
+## plotting the risk scores in a combined figure
 df_long <- df_all_risk_scores %>%
   pivot_longer(
     cols = c(SCORE2_score, ascvd_10y, frs_10y, QRISK3_2017),
