@@ -376,5 +376,36 @@ ggplot(df_long, aes(x = score_type, y = risk)) +
     axis.text.x = element_text(angle = 25, hjust = 1)
   )
 
+##---------------------------------------------------------------------##
+# 5. Correlate the 4 risk scores & composite score with each other and plot heatmap style
+?cor(x, y, method = "kendall")
+
+## create Kendall's Tau correlation matrix
+# subset relevant columns
+risk_mat <- df_all_risk_scores %>%
+  select(SCORE2_score, ascvd_10y, frs_10y, QRISK3_2017, mean_risk)
+
+# Kendall correlation matrix
+cor_kendall <- cor(risk_mat, method = "kendall", use = "pairwise.complete.obs") 
+#with pairwise complete each correlation uses the maximum available data. If i do "complete" instead, only participatns with no NA will be used -> loosing some data.
+
+cor_kendall # call the matrix
+
+
+## heatmap with the matrix results
+as.data.frame(cor_kendall) %>% # convert the matrix into a dataframe so tidyverse function can work with it
+  rownames_to_column("var1") %>% # move the row names into a column called var1
+  pivot_longer(-var1, names_to = "var2", values_to = "tau") %>%
+  ggplot(aes(var1, var2, fill = tau)) + # xaxis 1st variable, yaxis 2nd variable, tau = color
+  geom_tile() +
+  geom_text(aes(label = round(tau, 2))) +
+  scale_fill_gradient2(low="blue", mid="white", high="red", limits=c(-1,1)) +
+  coord_equal() + #makes equal squares
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Kendall Correlation Between Cardiovascular Risk Scores",
+       x = "", y = "")
+
+
 
 
