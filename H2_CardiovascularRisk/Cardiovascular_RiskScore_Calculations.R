@@ -53,12 +53,14 @@ lipids_keep <- df_Cholesterol_HDL %>%
     # Create patient-level ID (remove visit suffix _V1/_V2/_V3)
     PatientID = str_remove(SampleID, "_V[1-3]$"),
     Total_Cholesterol_mg_dl = parse_number(Total_Cholesterol_mg_dl), # parse_number() turns character columns in numeric columns
-    HDL_mg_dl               = parse_number(HDL_mg_dl)
+    HDL_mg_dl               = parse_number(HDL_mg_dl),
+    LDL_mg_dl               = parse_number(LDL_mg_dl)
   ) %>%
   group_by(PatientID) %>%
   summarise( # calculates the mean each and the ratio of the means
     mean_Total_Cholesterol_mg_dl = mean(Total_Cholesterol_mg_dl, na.rm = TRUE),
     mean_HDL_mg_dl = mean(HDL_mg_dl, na.rm = TRUE),
+    mean_LDL_mg_dl = mean(LDL_mg_dl, na.rm = TRUE),
         .groups = "drop" # removes all grouping (the data got grouped by (group_by() to calculate each patients mean))
   )
 
@@ -159,6 +161,7 @@ summary(Framingham$frs_10y)
 
 ##---------------------------------------------------------------------##
 ## 2. ASCVD Score
+# at the moment adjusted to exclude LDL otuside 70-189 mg/dl
 ASCVD <- data.frame(
   PatientID = risk_factor_input$PatientID,
   race    = risk_factor_input$race_ascvd,   # "white", "aa", "other"
@@ -169,10 +172,14 @@ ASCVD <- data.frame(
   sbp     = risk_factor_input$systolic,
   bp_med  = risk_factor_input$blood_pressure_treatment,
   smoker  = risk_factor_input$SmokingStatusQRISK3,
-  diabetes = risk_factor_input$Diabetes
+  diabetes = risk_factor_input$Diabetes,
+  ldl     = risk_factor_input$mean_LDL_mg_dl   # <- included, but NOT used in score
 ) %>%
   filter(!if_any(everything(), is.na)) %>%    # cannot have NA values
-  filter(age >= 40 & age <= 79) %>%           # age range according to website
+  filter(
+    age >= 40 & age <= 79,  # age range according to website
+    ldl >= 70 & ldl <= 189 # LDL according to website
+    ) %>%          
   mutate(
     ascvd_10y = ascvd_10y_accaha(
       race, gender, age, totchol, hdl, sbp, bp_med, smoker, diabetes
@@ -182,7 +189,15 @@ ASCVD <- data.frame(
 # just checking the people that got excluded because they have values outside specific ranges
 ASCVD %>%
   filter(is.na(ascvd_10y)) %>%
-  select(age, totchol, hdl, sbp)
+  select(PatientID, age, totchol, hdl, sbp)
+
+# checking how many people we loose because of LDL exclusion
+excluded <- risk_factor_input %>%
+  filter(is.na(mean_LDL_mg_dl) |
+           mean_LDL_mg_dl < 70 |
+           mean_LDL_mg_dl > 189) %>%
+  select(PatientID, mean_LDL_mg_dl)
+excluded
 
 ### checking distribution and mean of ASCVD score
 # Histogram + density for ASCVD scores
