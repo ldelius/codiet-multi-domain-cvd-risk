@@ -297,7 +297,7 @@ outlier_summary
 
 # add the QRISK3_2017 results to the df with risk_factors
 df_patient_risk_for_lm <- df_patient_risk_for_lm %>%
-  #rename(Sample_ID = PatientID) %>%
+  rename(Sample_ID = PatientID) %>%
   inner_join(QRISK3_sample_ID, by = "Sample_ID")
 
 df_patient_risk_for_lm %>%
@@ -361,6 +361,7 @@ num_predictors <- df_scaled_patient_risk_for_lm %>%
 factor_predictors <- df_scaled_patient_risk_for_lm %>%
   select(where(is.factor)) %>%
   names()
+factor_predictors
 
 # Combined for plotting
 plot_predictors <- c(num_predictors, factor_predictors)
@@ -427,6 +428,47 @@ glm_output <- bind_rows(glm_output_num, glm_output_fac) %>%
     significant = if_else(conf.low > 1 | conf.high < 1,
                           "Significant", "Not significant")
   ) %>%
+  arrange(p.adj)
+
+
+###### -- Running GLMM (Generalised Linear Mixed Model) with Random Effects (Gender & Country)-- #####
+predictors <- df_scaled_patient_risk_for_lm %>%
+  select(
+    starts_with("z_"),
+    where(is.factor)
+  ) %>% # selects all columns whose names begin with z_ & factors. Those variables shall be modeled against my selected group.
+  select(-Gender) %>%     # do not want to model Gender as fixed effect here
+  names() #creates a simple list of column names
+predictors
+
+glmm_gender <- map_dfr(predictors, function(var) {
+  
+  df_pair <- df_scaled_patient_risk_for_lm %>%
+    select(QRISK3_2017, Gender, all_of(var)) %>%
+    drop_na()
+  
+  form <- as.formula(paste("QRISK3_2017 ~", var, "+ (1 | Gender)")) # fixed effect = predictor, random effect = Gender
+  
+  model <- lme4::glmer(
+    form,
+    data   = df_pair,
+    family = Gamma(link = "log")
+  )
+  
+  coef_df <- as.data.frame(summary(model)$coefficients)
+  coef_df$term <- rownames(coef_df)
+  
+  coef_df %>%
+    filter(term != "(Intercept)") %>%
+    mutate(
+      conf.low  = Estimate - 1.96 * `Std. Error`,
+      conf.high = Estimate + 1.96 * `Std. Error`,
+      predictor = var,
+      n         = nrow(df_pair)
+    )
+  
+}) %>%
+  mutate(p.adj = p.adjust(`Pr(>|z|)`, method = "BH")) %>%
   arrange(p.adj)
 
 
@@ -541,8 +583,38 @@ ggplot(
   ) +
   theme(axis.text.y = element_text(size = 7))
 
+###### ---------------- Plotting GLM Random Effect Model (Gender) ---------------- ######
+glmm_plot <- glmm_gender %>%
+  mutate(
+    ratio       = exp(Estimate),
+    ci.low      = exp(conf.low),
+    ci.high     = exp(conf.high),
+    significant = if_else(p.adj < 0.05, "Significant", "Not significant")
+  )
 
+ord <- glmm_plot$term[order(glmm_plot$ratio)]
 
+ggplot(glmm_plot %>%
+         filter(term != "Age.RiskIII"),
+       aes(x = ratio,
+           y = factor(term, levels = ord),
+           colour = significant)) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_errorbarh(aes(xmin = ci.low, xmax = ci.high), height = 0.2) +
+  geom_point() +
+  scale_colour_manual(values = c("Significant" = "firebrick3",
+                                 "Not significant" = "black")) +
+  labs(
+    x = "Ratio of expected QRISK3 (exp(beta))",
+    y = "Predictor",
+    title   = "GLMM with random intercept for Gender",
+    caption = "Model: QRISK3_2017 ~ predictor + (1 | Gender)\nBlack = p ≥ 0.05, Red = p < 0.05 (BH correction)\n95% CIs on ratio scale\nn varies by predictor"
+  ) +
+  theme(
+    axis.text.y = element_text(size = 6),
+    plot.caption.position = "plot",
+    plot.caption = element_text(hjust = 1, vjust = 1, size = 8)
+  )
 
 
 ### ----- check whether weight and fat free mass correlate ----- ###
