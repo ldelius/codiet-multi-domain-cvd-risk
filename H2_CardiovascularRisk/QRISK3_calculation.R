@@ -437,17 +437,22 @@ predictors <- df_scaled_patient_risk_for_lm %>%
     starts_with("z_"),
     where(is.factor)
   ) %>% # selects all columns whose names begin with z_ & factors. Those variables shall be modeled against my selected group.
-  select(-Gender) %>%     # do not want to model Gender as fixed effect here
+  select(-Gender, -Country) %>%     # do not want to model Gender as fixed effect here
   names() #creates a simple list of column names
 predictors
 
-glmm_gender <- map_dfr(predictors, function(var) {
+glmm_gender_country <- map_dfr(predictors, function(var) {
   
   df_pair <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_2017, Gender, all_of(var)) %>%
+    select(QRISK3_2017, Gender, Country, all_of(var)) %>%
     drop_na()
   
-  form <- as.formula(paste("QRISK3_2017 ~", var, "+ (1 | Gender)")) # fixed effect = predictor, random effect = Gender
+  if (nrow(df_pair) == 0 || n_distinct(df_pair$Country) < 2) {
+    message("Skipping ", var, ": only one Country level in subset after drop_na().")
+    return(tibble())
+  }
+  
+  form <- as.formula(paste("QRISK3_2017 ~", var, "+ (1 | Gender) + (1 | Country)")) # fixed effect = predictor, random effect = Gender (&Country)
   
   model <- lme4::glmer(
     form,
@@ -583,8 +588,8 @@ ggplot(
   ) +
   theme(axis.text.y = element_text(size = 7))
 
-###### ---------------- Plotting GLM Random Effect Model (Gender) ---------------- ######
-glmm_plot <- glmm_gender %>%
+###### ---------------- Plotting GLM Random Effect Model (Gender & Country) ---------------- ######
+glmm_plot <- glmm_gender_country %>%
   mutate(
     ratio       = exp(Estimate),
     ci.low      = exp(conf.low),
@@ -607,8 +612,8 @@ ggplot(glmm_plot %>%
   labs(
     x = "Ratio of expected QRISK3 (exp(beta))",
     y = "Predictor",
-    title   = "GLMM with random intercept for Gender",
-    caption = "Model: QRISK3_2017 ~ predictor + (1 | Gender)\nBlack = p ≥ 0.05, Red = p < 0.05 (BH correction)\n95% CIs on ratio scale\nn varies by predictor"
+    title   = "GLMM with random intercept for Gender & Country",
+    caption = "Model: QRISK3_2017 ~ predictor + (1 | Gender) + (1 | Country)\nBlack = p ≥ 0.05, Red = p < 0.05 (BH correction)\n95% CIs on ratio scale\nn varies by predictor\nSkipping z_Fasted.NEFA.mmol.L and z_Fasted.Insulin.pmol.l as only one Country level in subset after drop_na()."
   ) +
   theme(
     axis.text.y = element_text(size = 6),
