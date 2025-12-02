@@ -320,6 +320,8 @@ df_all_risk_scores <- SCORE2 %>%
     na.rm = TRUE
   ))
 
+saveRDS(df_all_risk_scores, file = file.path(wkdir, "processed_data", "df_all_risk_scores.rds"))
+
 ## histogram of the composite risk score
 ggplot(df_all_risk_scores, aes(x = mean_risk)) +
   geom_histogram(
