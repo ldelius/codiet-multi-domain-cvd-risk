@@ -21,7 +21,7 @@ setwd(wkdir)
 df_intact_lipid_species <- read_csv("CoDiet_lipidomics_2025_04_09.csv")
 df_individual_fatty_acids <- read_csv("CoDiet_lipidomics_dbs_rbc_2025_09_24.csv")
 QRISK3_sample_ID <- readRDS("QRISK3_sample_ID.RDS") ### this has to be exchanged if i change anything of the QRISK input data of courese!!!
-
+df_statins_supplements <- read_excel("Statins_Supplements.xlsx")
 
 # 2. Prepare both data sets for Regression Modelling
 df_lipidomics_mean <- df_intact_lipid_species %>%
@@ -185,7 +185,7 @@ glm_output_fatty_acids <- map_dfr(fatty_acid_predictors, function(var) { # loops
 glm_output_fatty_acids
 
 
-# 4. Plotting the GLM results
+# 4. Plotting the GLM results ---------------- #####
 ## 4.1 plotting lipids
 ord_lipids <- glm_output_lipids %>%
   arrange(estimate) %>%
@@ -282,3 +282,129 @@ lapply(
   split(plots_glm, ceiling(seq_along(plots_glm) / 12)),
   \(p) print(wrap_plots(p, ncol = 4, nrow = 3))
 )
+
+# 5. GLM with fixed effects Statins and Supplements --------#################
+## prepare the Statin and Supplemnt data
+df_keep_statins_supplements <- df_statins_supplements %>%
+  select(Sample_ID, Statins, Supplements) %>%
+  mutate(Statins = factor(Statins),
+        Supplements = factor(Supplements),
+        Sample_ID = str_replace_all(Sample_ID, "-", "_")
+  )
+
+## join the columns to the main data
+df_fatty_acids_scaled_QRISK3_random <- df_fatty_acids_scaled_and_QRISK3 %>%
+  left_join(df_keep_statins_supplements, by = "Sample_ID")
+
+df_lipidomics_scaled_QRISK3_random <- df_lipidomics_scaled_and_QRISK3 %>%
+  left_join(df_keep_statins_supplements, by = "Sample_ID")
+
+## run the glm with fixed effect on FATTY ACIDS
+glm_output_fatty_acids <- map_dfr(fatty_acid_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
+  df_pair <- df_fatty_acids_scaled_QRISK3_random %>%
+    select(QRISK3_2017, all_of(var), Statins, Supplements) %>%
+    drop_na()
+  
+model <- glm(
+    as.formula(paste("QRISK3_2017 ~", var, "+ Statins + Supplements")),
+    data   = df_pair,
+    family = Gamma(link = "log") # chose Gamma distribution given the positive, continuous, right-skewed data.
+  ) # why link = log? Gamma distribution only makes sense for positive means, so by log link the predicted means are all positive. Each 1-unit increase in X increases the expected QRISK3 by e^b1.
+  
+  # Return tidy estimates; exponentiate to get multiplicative effects (ratios)
+  tidy(model, conf.int = TRUE, exponentiate = TRUE) %>% # exponentiates b1 (logarithm of the multiplicative effect) --> easier to read and interpret
+    filter(term == var) %>%
+    mutate(
+      predictor = var,
+      n = nrow(df_pair)
+    )
+}) %>%
+  # p.value here is the Wald test p-value for the GLM coefficient
+  mutate(p.adj = p.adjust(p.value, method = "BH"),
+         significant = if_else(conf.low > 1 | conf.high < 1, "Significant", "Not significant")
+  ) %>%
+  arrange(p.adj)
+
+glm_output_fatty_acids
+
+## forest plot FATTY ACIDS with fixed effect
+ord_fatty_acids <- glm_output_fatty_acids %>%
+  arrange(estimate) %>%
+  pull(predictor)
+
+ggplot(glm_output_fatty_acids,
+       aes(x = estimate, y = factor(predictor, levels = ord_fatty_acids), colour = significant)) +
+  geom_vline(xintercept = 1, linetype = "dashed") +     # no-effect line is 1 (ratio scale)
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_point() +
+  scale_colour_manual(values = c("Significant" = "firebrick3",
+                                 "Not significant" = "black")) +
+  labs(
+    x = "Ratio of expected QRISK3 (exp(beta))",
+    y = "Predictor",
+    title = "Fatty acids (adjusted for Statins + Supplements)",
+    caption = "Model: QRISK3_2017 ~ predictor + Statins + Supplements (Gamma, log link)
+              Red = BH-adjusted p < 0.05; Black = BH-adjusted p ≥ 0.05
+              Ratios of expected QRISK3 (exp(beta)) with 95% CIs
+              Outliers excluded (1st/99th percentile per predictor)
+              Sample size (n) varies by predictor due to drop_na() and outlier trimming"
+  ) +
+  theme(axis.text.y = element_text(size = 6),
+        plot.caption.position = "plot",        # ensures caption is placed at bottom right
+        plot.caption = element_text(size = 6, hjust = 1)                          # smaller caption tex 
+        )
+
+## run the glm with fixed effect on LIPIDS
+glm_output_lipids <- map_dfr(lipid_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
+  df_pair <- df_lipidomics_scaled_QRISK3_random %>%
+    select(QRISK3_2017, all_of(var), Statins, Supplements) %>%
+    drop_na()
+  
+model <- glm(
+    as.formula(paste("QRISK3_2017 ~", var, "+ Statins + Supplements")),
+    data   = df_pair,
+    family = Gamma(link = "log") # chose Gamma distribution given the positive, continuous, right-skewed data.
+  ) # why link = log? Gamma distribution only makes sense for positive means, so by log link the predicted means are all positive. Each 1-unit increase in X increases the expected QRISK3 by e^b1.
+  
+  # Return tidy estimates; exponentiate to get multiplicative effects (ratios)
+  tidy(model, conf.int = TRUE, exponentiate = TRUE) %>% # exponentiates b1 (logarithm of the multiplicative effect) --> easier to read and interpret
+    filter(term == var) %>%
+    mutate(
+      predictor = var,
+      n = nrow(df_pair)
+    )
+}) %>%
+  # p.value here is the Wald test p-value for the GLM coefficient
+  mutate(p.adj = p.adjust(p.value, method = "BH"),
+         significant = if_else(conf.low > 1 | conf.high < 1, "Significant", "Not significant")
+  ) %>%
+  arrange(p.adj)
+
+glm_output_lipids
+
+## forest plot LIPIDS with fixed effect
+ord_lipids <- glm_output_lipids %>%
+  arrange(estimate) %>%
+  pull(predictor)
+
+ggplot(glm_output_lipids,
+       aes(x = estimate, y = factor(predictor, levels = ord_lipids), colour = significant)) +
+  geom_vline(xintercept = 1, linetype = "dashed") +     # no-effect line is 1 (ratio scale)
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
+  geom_point() +
+  scale_colour_manual(values = c("Significant" = "firebrick3",
+                                 "Not significant" = "black")) +
+  labs(
+    x = "Ratio of expected QRISK3 (exp(beta))",
+    y = "Predictor",
+    title = "LIPIDS (adjusted for Statins + Supplements)",
+    caption = "Model: QRISK3_2017 ~ predictor + Statins + Supplements (Gamma, log link)
+              Red = BH-adjusted p < 0.05; Black = BH-adjusted p ≥ 0.05
+              Ratios of expected QRISK3 (exp(beta)) with 95% CIs
+              Outliers excluded (1st/99th percentile per predictor)
+              Sample size (n) varies by predictor due to drop_na() and outlier trimming"
+  ) +
+  theme(axis.text.y = element_text(size = 6),
+        plot.caption.position = "plot",        # ensures caption is placed at bottom right
+        plot.caption = element_text(size = 6, hjust = 1)                          # smaller caption tex 
+  )
