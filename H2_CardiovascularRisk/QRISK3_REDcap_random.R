@@ -121,6 +121,9 @@ df_other_cleaned_and_QRISK <- df_other_cleaned_and_QRISK %>%
     Marital_status != "Widowed"
   )
 
+saveRDS(df_other_cleaned_and_QRISK,
+  file = file.path(wkdir, "processed_data", "df_REDcap_demographics_predictor.rds"))
+
 #####Preperaing and running the glm #######
 ## i will run one GLM per numeric predictor
 ## in order to not loose a level in my forest plots, I will run a GLM per factor level 
