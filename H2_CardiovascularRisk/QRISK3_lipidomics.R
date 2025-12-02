@@ -299,6 +299,14 @@ df_fatty_acids_scaled_QRISK3_random <- df_fatty_acids_scaled_and_QRISK3 %>%
 df_lipidomics_scaled_QRISK3_random <- df_lipidomics_scaled_and_QRISK3 %>%
   left_join(df_keep_statins_supplements, by = "Sample_ID")
 
+## save predictors + statins + supplements as RDS
+saveRDS(df_fatty_acids_scaled_QRISK3_random, 
+        file = file.path(wkdir, "processed_data", "df_fatty_acids_predictor_statin_suppl.rds"))
+
+saveRDS(df_lipidomics_scaled_QRISK3_random,
+        file = file.path(wkdir, "processed_data", "df_lipidomics_predictor_statin_suppl.rds"))
+
+
 ## run the glm with fixed effect on FATTY ACIDS
 glm_output_fatty_acids <- map_dfr(fatty_acid_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
   df_pair <- df_fatty_acids_scaled_QRISK3_random %>%
