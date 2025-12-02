@@ -312,6 +312,9 @@ df_scaled_patient_risk_for_lm <- df_patient_risk_for_lm %>%
   mutate(across(where(is.double) & !matches("QRISK3_2017"), ~ scale(.x), .names = "z_{col}")) %>%
   rename_with(function(x) gsub("[- ]", "_", x))
 
+saveRDS(df_scaled_patient_risk_for_lm,
+  file = file.path(wkdir, "processed_data", "df_risk_factor_predictors.rds"))
+
 
 ### --------- Running and Plotting normal Linear Regression Model -----------###
 # Run several LMs with QRISK and z_scores
