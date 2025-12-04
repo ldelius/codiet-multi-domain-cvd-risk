@@ -105,6 +105,7 @@ qrisk_input <- maindata_keep %>%
   full_join(patient_age, by = "PatientID") %>%
   full_join(df_townsend %>% select(PatientID, townsend), by = "PatientID")
 
+saveRDS(qrisk_input, file.path(wkdir, "processed_data", "QRISK3_calculation_input.rds"))
 
 # Create dataframe to calculate QRISK3 (every condition gets their values assigned)
 QRISK3 <- data.frame(
