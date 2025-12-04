@@ -107,6 +107,9 @@ risk_factor_input <- maindata_keep %>%
   full_join(patient_age, by = "PatientID") %>%
   full_join(risk_region_keep, by = "PatientID")
 
+saveRDS(risk_factor_input, file.path(wkdir, "processed_data", "ASCVD_SCORE2_Framingham_input.rds"))
+
+
 ###################### Risk score calulations ######################
 ## 1. Framingham Score
 Framingham <- data.frame(
