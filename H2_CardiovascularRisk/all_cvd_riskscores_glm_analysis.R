@@ -5,6 +5,9 @@
 library(tidyverse)
 library(broom)
 library(patchwork)
+library(readxl)
+library(lme4)
+library(broom.mixed)
 
 # Set working directory
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files/processed_data"
@@ -41,6 +44,9 @@ df_cvd_scores_and_body_composition <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
   full_join(df_body_composition_metrics %>% select(-QRISK3_2017), by = "Sample_ID")
 
+df_sex_country <- df_risk_factors_predictors %>%
+  select(Sample_ID, Gender, Country)
+
 # 2. Creating the predictors for the model
 lipid_predictors <- df_lipidomics_predictors %>%
   select(starts_with("z_")) %>%
@@ -60,6 +66,7 @@ REDcap_numeric_predictors
 
 REDcap_factor_predictors <- df_REDcap_demographics_predictors %>%
   select(where(is.factor)) %>%
+  select(-recruitment_site) %>%
   names()
 REDcap_factor_predictors
 
@@ -407,3 +414,169 @@ ggplot() +
   coord_equal() +
   theme_void() +
   ggtitle("Network-style plot of Kendall correlations between risk scores")
+
+
+######## --------------- ########## -------------------- ############
+# 8. Run GLMM (mixed effect with Gender and Country) for risk_factor, sociodemographic, body composition
+# and mixed effectwith statins and supplements for lipidomics and fatty acids
+
+# 8.1 Add Sex and Country to the df | or statins & supplements
+df_cvd_scores_and_REDcap <- df_cvd_scores_and_REDcap %>%
+  left_join(df_sex_country, by = "Sample_ID") %>%
+  select(-recruitment_site)
+
+df_cvd_scores_and_body_composition <- df_cvd_scores_and_body_composition %>%
+  left_join(df_sex_country, by = "Sample_ID")
+
+
+# 8.2 glmm function
+# GLMM for numeric predictors
+run_glmm_num <- function(data, outcomes, num_predictors, random_effects) {
+  
+  random_part <- paste0("(1|", random_effects, ")", collapse = " + ")
+  
+  map_dfr(num_predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      
+      df_pair <- data %>%
+        select(all_of(outcome), all_of(var), all_of(random_effects)) %>%
+        drop_na()
+      
+      # Skip if any random effect has < 2 levels
+      for (re in random_effects) {
+        if (n_distinct(df_pair[[re]]) < 2) {
+          message("Skipping ", var, " ~ ", outcome, ": ", re, " has < 2 levels")
+          return(tibble())
+        }
+      }     
+      
+      model <- lme4::glmer(
+        as.formula(paste(outcome, "~", var, "+", random_part)),
+        data    = df_pair,
+        family  = Gamma(link = "log"),
+        control = glmerControl(optimizer = "bobyqa")
+      )
+      
+      broom.mixed::tidy(model, conf.int = TRUE, exponentiate = TRUE, effects = "fixed") %>%
+        filter(term != "(Intercept)") %>%
+        mutate(
+          predictor   = var,
+          level       = NA_character_,
+          outcome     = outcome,
+          n           = nrow(df_pair),
+          significant = if_else(conf.low > 1 | conf.high < 1, "Significant", "Not significant")
+        )
+    })
+  })
+}
+
+# GLMM for factor predictors (with dummies)
+run_glmm_fac <- function(data, outcomes, factor_predictors, random_effects) {
+  
+  random_part <- paste0("(1|", random_effects, ")", collapse = " + ")
+  
+  map_dfr(factor_predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      
+      df_pair <- data %>%
+        select(all_of(outcome), all_of(var), all_of(random_effects)) %>%
+        drop_na()
+      
+      levs <- levels(df_pair[[var]])
+      if (length(levs) == 0L) return(tibble())
+      
+      map_dfr(levs, function(lev) {
+        
+        df_tmp <- df_pair %>%
+          mutate(dummy = if_else(.data[[var]] == lev, 1, 0))
+        
+        model <- lme4::glmer(
+          as.formula(paste(outcome, "~ dummy +", random_part)),
+          data    = df_tmp,
+          family  = Gamma(link = "log"),
+          control = glmerControl(optimizer = "bobyqa")
+        )
+        
+        broom.mixed::tidy(model, conf.int = TRUE, exponentiate = TRUE, effects = "fixed") %>%
+          filter(term == "dummy") %>%
+          mutate(
+            predictor   = var,
+            level       = lev,
+            term        = paste0(var, " = ", lev),
+            outcome     = outcome,
+            n           = nrow(df_tmp),
+            significant = if_else(conf.low > 1 | conf.high < 1, "Significant", "Not significant")
+          )
+      })
+    })
+  })
+}
+
+# 8.3 Run the GLMM model
+# Numeric
+glmm_REDcap_num    <- run_glmm_num(df_cvd_scores_and_REDcap, outcomes, REDcap_numeric_predictors, c("Gender", "Country"))
+glmm_risk_num      <- run_glmm_num(df_cvd_scores_and_risk_factors, outcomes, risk_factor_num_predictors, c("Gender", "Country"))
+glmm_body_comp_num <- run_glmm_num(df_cvd_scores_and_body_composition, outcomes, body_composition_predictors, c("Gender", "Country"))
+glmm_lipid_num     <- run_glmm_num(df_cvd_scores_and_lipidomics, outcomes, lipid_predictors, c("Statins", "Supplements"))
+glmm_fatty_num     <- run_glmm_num(df_cvd_scores_and_fatty_acids, outcomes, fatty_acid_predictors, c("Statins", "Supplements"))
+
+# Factor
+glmm_REDcap_fac <- run_glmm_fac(df_cvd_scores_and_REDcap, outcomes, REDcap_factor_predictors, c("Gender", "Country"))
+glmm_risk_fac   <- run_glmm_fac(df_cvd_scores_and_risk_factors, outcomes, risk_factor_factor_predictors, c("Gender", "Country"))
+
+# 8.4 Combined plot of significant results
+# Combined table for GLMM results
+all_results_glmm <- bind_rows(
+  glmm_lipid_num     %>% mutate(predictor_set = "Lipids"),
+  glmm_fatty_num     %>% mutate(predictor_set = "Fatty acids"),
+  glmm_REDcap_num    %>% mutate(predictor_set = "REDCap"),
+  glmm_REDcap_fac    %>% mutate(predictor_set = "REDCap"),
+  glmm_risk_num      %>% mutate(predictor_set = "Risk factors"),
+  glmm_risk_fac      %>% mutate(predictor_set = "Risk factors"),
+  glmm_body_comp_num %>% mutate(predictor_set = "Body composition")
+) %>%
+  mutate(
+    term_plot = if_else(is.na(level), predictor, term)  
+  )
+
+# Significant predictors only
+sig_only_glmm <- all_results_glmm %>% 
+  filter(significant == "Significant") %>%
+  mutate(
+    direction = case_when(
+      estimate < 1 ~ "Lower risk",
+      estimate > 1 ~ "Higher risk",
+      TRUE         ~ NA_character_
+    )
+  )
+
+# Order: direction first, then count of significance
+term_levels_facet <- sig_only_glmm %>%
+  mutate(direction_order = if_else(estimate > 1, 1, 2)) %>%
+  group_by(predictor_set, term_plot, direction_order) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  arrange(predictor_set, direction_order, desc(n), term_plot) %>%
+  pull(term_plot)
+
+
+# Plot
+ggplot(sig_only_glmm,
+       aes(x = outcome, y = factor(term_plot, levels = term_levels_facet), fill = direction)
+) +
+  geom_tile(colour = "white") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_manual(values = c("Lower risk" = "#3cb371", "Higher risk" = "#d73027")) +
+  labs(
+    x = "Cardiovascular risk score",
+    y = "Predictor",
+    fill = "",
+    title = "GLMM: Significant predictors across cardiovascular risk scores",
+    caption = "Model: outcome ~ predictor + (1|random effects) (Gamma, log link)\nRandom effects: Gender & Country (REDCap, Risk factors, Body composition)\nRandom effects: Statins & Supplements (Lipids, Fatty acids)\nOutliers excluded (1st/99th percentile) for Lipids & Fatty acids only"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    panel.background = element_rect(fill = "white"),
+    plot.caption = element_text(size = 6, hjust = 1),
+    strip.text.y = element_text(size = 8, face = "bold", angle = 0)
+)
