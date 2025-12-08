@@ -17,6 +17,7 @@ df_fatty_acids_predictors <- readRDS("df_fatty_acids_predictor_statin_suppl.rds"
 df_lipidomics_predictors <- readRDS("df_lipidomics_predictor_statin_suppl.rds")
 df_risk_factors_predictors <- readRDS("df_risk_factor_predictors.rds")
 df_REDcap_demographics_predictors <- readRDS("df_REDcap_demographics_predictor.rds")
+df_body_composition_metrics <- readRDS("df_body_composition_metrics.rds")
 
 # Preparation for running GLM
 # 1. do a joint df with everything I want as predictors and all the risk scores. also include statins and supplements for lipids and fatty acids.
@@ -35,6 +36,10 @@ df_cvd_scores_and_REDcap <- df_all_cvd_risk_scores %>%
 df_cvd_scores_and_risk_factors <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
   full_join(df_risk_factors_predictors %>% select(-QRISK3_2017), by = "Sample_ID") 
+
+df_cvd_scores_and_body_composition <- df_all_cvd_risk_scores %>%
+  rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
+  full_join(df_body_composition_metrics %>% select(-QRISK3_2017), by = "Sample_ID")
 
 # 2. Creating the predictors for the model
 lipid_predictors <- df_lipidomics_predictors %>%
@@ -68,6 +73,10 @@ risk_factor_factor_predictors <- df_risk_factors_predictors %>% # once i do glmm
   names()
 risk_factor_factor_predictors
 
+body_composition_predictors <- df_body_composition_metrics %>%
+  select(starts_with("z_")) %>%
+  names()
+body_composition_predictors
 
 # 3. define outcomes for the model
 outcomes <- c(
@@ -113,7 +122,7 @@ glm_fatty_num  <- run_glm_num(df_cvd_scores_and_fatty_acids, outcomes, fatty_aci
 glm_lipid_num  <- run_glm_num(df_cvd_scores_and_lipidomics,  outcomes, lipid_predictors)
 glm_REDcap_num <- run_glm_num(df_cvd_scores_and_REDcap,      outcomes, REDcap_numeric_predictors)
 glm_risk_num   <- run_glm_num(df_cvd_scores_and_risk_factors, outcomes, risk_factor_num_predictors)
-
+glm_body_comp_num <- run_glm_num(df_cvd_scores_and_body_composition, outcomes, body_composition_predictors)
 
 ## 4.2 GLM function for factor predictors
 run_glm_fac <- function(data, outcomes, factor_predictors) {
@@ -233,6 +242,11 @@ risk_fact_plots <- make_all_forest_plots(
   title_prefix = "Clinical risk factors",
   outcomes     = outcomes)
 
+body_comp_plots <- make_all_forest_plots(
+  df           = glm_body_comp_num,
+  title_prefix = "Body composition metrics",
+  outcomes     = outcomes)
+
 ## 5.3 Plotting
 lipid_plots[["QRISK3_2017"]]
 lipid_plots[["SCORE2_score"]]
@@ -249,6 +263,7 @@ REDcap_plots[["SCORE2_score"]]
 risk_fact_plots[["QRISK3_2017"]]
 risk_fact_plots[["SCORE2_score"]]
 
+body_comp_plots[["SCORE2_score"]]
 
 # 6. Combined table about significant ones
 all_results <- bind_rows( # combine all results
@@ -257,7 +272,8 @@ all_results <- bind_rows( # combine all results
   glm_REDcap_num %>% mutate(predictor_set = "REDCap"),
   glm_REDcap_fac %>% mutate(predictor_set = "REDCap"),
   glm_risk_num   %>% mutate(predictor_set = "Risk factors"),
-  glm_risk_fac   %>% mutate(predictor_set = "Risk factors")
+  glm_risk_fac   %>% mutate(predictor_set = "Risk factors"),
+  glm_body_comp_num %>% mutate(predictor_set = "Body composition")
 ) %>%
   mutate(
     term_plot = if_else(is.na(level), predictor, term)  
