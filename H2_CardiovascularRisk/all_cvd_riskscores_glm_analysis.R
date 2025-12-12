@@ -77,6 +77,7 @@ risk_factor_num_predictors
 
 risk_factor_factor_predictors <- df_risk_factors_predictors %>% # once i do glmm, no need to keep that
   select(where(is.factor)) %>%
+  select(-Gender, -Country) %>% # only for the glmm, delete this for glm
   names()
 risk_factor_factor_predictors
 
@@ -297,38 +298,37 @@ sig_only <- all_results %>%
     )
   )
 
-# define y-axis order: grouped by predictor set and internaly by amount of significance
+
+# Order: direction first, then count of significance
 term_levels <- sig_only %>%
-  count(predictor_set, term_plot) %>%
-  arrange(predictor_set, desc(n), term_plot) %>%
+  mutate(direction_order = if_else(estimate > 1, 1, 2)) %>%
+  group_by(predictor_set, term_plot, direction_order) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  arrange(predictor_set, direction_order, desc(n), term_plot) %>%
   pull(term_plot)
 
-# plot
+# Plot
 ggplot(sig_only,
-  aes(
-    x    = outcome,
-    y    = factor(term_plot, levels = term_levels),
-    fill = direction
-  )
+       aes(x = outcome, y = factor(term_plot, levels = term_levels), fill = direction)
 ) +
-  geom_tile(
-    colour = "white"
-  ) +
-  scale_fill_manual(values = c(
-    "Lower risk"  = "#3cb371",  
-    "Higher risk" = "#d73027" 
-  )) +
+  geom_tile(colour = "white") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_manual(values = c("Lower risk" = "#3cb371", "Higher risk" = "#d73027")) +
   labs(
     x = "Cardiovascular risk score",
     y = "Predictor",
     fill = "",
-    title = "Significant predictors across cardiovascular risk scores"
+    title = "GLM: Significant predictors across cardiovascular risk scores",
+    caption = "Model: outcome ~ predictor (Gamma, log link)\nOutliers excluded (1st/99th percentile) for Lipids & Fatty acids only"
   ) +
   theme(
-    axis.text.x = element_text(size = 5),
-    axis.text.y      = element_text(size = 6),
-    panel.background = element_rect(fill = "white")
-    )
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 6),
+    panel.background = element_rect(fill = "white"),
+    plot.caption = element_text(size = 6, hjust = 1),
+    strip.text.y = element_text(size = 8, face = "bold", angle = 0)
+  )
+
 
 # 7. Kendall correlation of the significant result of the risk scores
 # Direction of the predictors
@@ -558,7 +558,6 @@ term_levels_facet <- sig_only_glmm %>%
   arrange(predictor_set, direction_order, desc(n), term_plot) %>%
   pull(term_plot)
 
-
 # Plot
 ggplot(sig_only_glmm,
        aes(x = outcome, y = factor(term_plot, levels = term_levels_facet), fill = direction)
@@ -580,3 +579,134 @@ ggplot(sig_only_glmm,
     plot.caption = element_text(size = 6, hjust = 1),
     strip.text.y = element_text(size = 8, face = "bold", angle = 0)
 )
+
+# 8.4.2 ONly plotting what is significant at least twice
+# Filter for predictors significant at least twice
+sig_twice_glmm <- sig_only_glmm %>%
+  group_by(term_plot) %>%
+  filter(n() >= 2) %>%
+  ungroup()
+
+# Order
+term_levels_twice <- sig_twice_glmm %>%
+  mutate(direction_order = if_else(estimate > 1, 1, 2)) %>%
+  group_by(predictor_set, term_plot, direction_order) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  arrange(predictor_set, direction_order, desc(n), term_plot) %>%
+  pull(term_plot)
+
+# Plot
+ggplot(sig_twice_glmm,
+       aes(x = outcome, y = factor(term_plot, levels = term_levels_twice), fill = direction)
+) +
+  geom_tile(colour = "white") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_manual(values = c("Lower risk" = "#3cb371", "Higher risk" = "#d73027")) +
+  labs(
+    x = "Cardiovascular risk score",
+    y = "Predictor",
+    fill = "",
+    title = "GLMM: Predictors significant in ≥2 risk scores",
+    caption = "Model: outcome ~ predictor + (1|random effects) (Gamma, log link)\nRandom effects: Gender & Country (REDCap, Risk factors, Body composition)\nRandom effects: Statins & Supplements (Lipids, Fatty acids)\nOutliers excluded (1st/99th percentile) for Lipids & Fatty acids only"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 8),
+    panel.background = element_rect(fill = "white"),
+    plot.caption = element_text(size = 6, hjust = 1),
+    strip.text.y = element_text(size = 8, face = "bold", angle = 0)
+  )
+
+# 8.4.3 plot at least 2 times significant and with colour coding of association strength
+# Step 1: Add log effect size to your data
+sig_twice_glmm <- sig_twice_glmm %>%
+  mutate(
+    log_effect = log(estimate),  # Log of exp(β) - negative = protective, positive = adverse
+    direction = if_else(estimate < 1, "Lower risk", "Higher risk")
+  )
+
+# Step 3: Plot with adjusted color scale
+ggplot(sig_twice_glmm,
+       aes(x = outcome, 
+           y = factor(term_plot, levels = term_levels_twice), 
+           fill = log_effect)) +
+  geom_tile(colour = "white") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_gradient2(
+    low = "#0072B2",           # Blue for protective
+    mid = "white",             # White for neutral
+    high = "#D55E00",          # Orange for adverse
+    midpoint = 0,
+    limits = c(-1.0, 1.1),     # Symmetric, slightly beyond your range
+    name = "log(exp(β))",
+    breaks = c(-0.8, -0.4, 0, 0.4, 0.8),
+    labels = c("-0.8", "-0.4", "0", "+0.4", "+0.8")
+  ) +
+  labs(
+    x = "Cardiovascular risk score",
+    y = "Predictor",
+    title = "GLMM: Predictors significant in ≥2 risk scores",
+    caption = "Model: outcome ~ predictor + (1|random effects) (Gamma, log link)\nRandom effects: Gender & Country (REDCap, Risk factors, Body composition)\nRandom effects: Statins & Supplements (Lipids, Fatty acids)\nOutliers excluded (1st/99th percentile) for Lipids & Fatty acids only"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 6),
+    panel.background = element_rect(fill = "white"),
+    plot.caption = element_text(size = 6, hjust = 1),
+    strip.text.y = element_text(size = 7, face = "bold", angle = 0),
+    legend.position = "right"
+  )
+
+
+# 8.5 GLMM forest plots with QRISK3 only
+body_comp_glmm_plot <- make_forest_one_outcome(
+  df           = glmm_body_comp_num,
+  outcome_name = "QRISK3_2017",
+  title_prefix = "GLMM: Body composition metrics"
+) +
+  labs(caption = "Model: QRISK3 ~ predictor + (1|Gender) + (1|Country) (Gamma, log link)") +
+  theme(plot.caption = element_text(size = 6, hjust = 1))
+body_comp_glmm_plot
+
+# Lipids
+lipid_glmm_plot <- make_forest_one_outcome(
+  df           = glmm_lipid_num,
+  outcome_name = "QRISK3_2017",
+  title_prefix = "GLMM: Lipids"
+) +
+  labs(caption = "Model: QRISK3 ~ predictor + (1|Statins) + (1|Supplements) (Gamma, log link)\nOutliers excluded (1st/99th percentile)") +
+  theme(plot.caption = element_text(size = 6, hjust = 1))
+lipid_glmm_plot
+
+# Fatty acids
+fatty_glmm_plot <- make_forest_one_outcome(
+  df           = glmm_fatty_num,
+  outcome_name = "QRISK3_2017",
+  title_prefix = "GLMM: Fatty acids"
+) +
+  labs(caption = "Model: QRISK3 ~ predictor + (1|Statins) + (1|Supplements) (Gamma, log link)\nOutliers excluded (1st/99th percentile)") +
+  theme(plot.caption = element_text(size = 6, hjust = 1))
+fatty_glmm_plot
+
+# REDcap
+REDcap_glmm_all <- bind_rows(glmm_REDcap_num, glmm_REDcap_fac)
+REDcap_glmm_plot <- make_forest_one_outcome(
+  df           = REDcap_glmm_all,
+  outcome_name = "QRISK3_2017",
+  title_prefix = "GLMM: REDCap demographics"
+) +
+  labs(caption = "Model: QRISK3 ~ predictor + (1|Gender) + (1|Country) (Gamma, log link)") +
+  theme(plot.caption = element_text(size = 6, hjust = 1))
+REDcap_glmm_plot
+
+# Risk factors
+risk_glmm_all <- bind_rows(glmm_risk_num, 
+                           glmm_risk_fac %>% filter(term != "Age.Risk = III"))
+risk_glmm_plot <- make_forest_one_outcome(
+  df           = risk_glmm_all,
+  outcome_name = "QRISK3_2017",
+  title_prefix = "GLMM: Clinical risk factors"
+) +
+  labs(caption = "Model: QRISK3 ~ predictor + (1|Gender) + (1|Country) (Gamma, log link)") +
+  theme(plot.caption = element_text(size = 6, hjust = 1))
+risk_glmm_plot
