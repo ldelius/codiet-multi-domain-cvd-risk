@@ -21,9 +21,15 @@ df_lipidomics_predictors <- readRDS("df_lipidomics_predictor_statin_suppl.rds")
 df_risk_factors_predictors <- readRDS("df_risk_factor_predictors.rds")
 df_REDcap_demographics_predictors <- readRDS("df_REDcap_demographics_predictor.rds")
 df_body_composition_metrics <- readRDS("df_body_composition_metrics.rds")
+df_QRISK3_wo_statins <- readRDS("QRISK3_sample_ID_wo_statins.RDS")
 
 # Preparation for running GLM
 # 1. do a joint df with everything I want as predictors and all the risk scores. also include statins and supplements for lipids and fatty acids.
+df_all_cvd_risk_scores <- df_all_cvd_risk_scores %>%
+  full_join(df_QRISK3_wo_statins %>%
+              rename(PatientID = Sample_ID), by = "PatienID"
+            )
+
 df_cvd_scores_and_fatty_acids <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
   full_join(df_fatty_acids_predictors %>% select(-QRISK3_2017), by = "Sample_ID")
