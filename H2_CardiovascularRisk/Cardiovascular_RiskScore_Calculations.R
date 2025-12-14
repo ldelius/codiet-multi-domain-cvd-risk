@@ -35,6 +35,9 @@ df_Blood_Pressure     <- read_excel("cardiovascular_riskfactor_calculations.xlsx
 df_age_risk_factor_sheet <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Age_risk_factor_sheet")
 df_risk_region <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Risk_region")
 QRISK3_sample_ID <- readRDS("QRISK3_sample_ID.RDS") ### this has to be exchanged if i change anything of the QRISK input data of courese!!!
+QRISK3_calculation_input <- readRDS("QRISK3_calculation_input.rds")
+df_statins_supplements <- read_excel("Statins_Supplements.xlsx")
+df_risk_factor_sheet <-readRDS("df_risk_factor_predictors.rds")
   
 # cleaning the data, so that it can be used for risk score calculations
 ## working on blood_pressure: change to SampleID, - to _, ...
@@ -134,14 +137,14 @@ Framingham <- data.frame(
 
 ### checking distribution and mean of Framingham score
 # Histogram + density for Framingham scores
-ggplot(Framingham, aes(x = frs_10y)) +
+plot_framigham <- ggplot(Framingham, aes(x = frs_10y)) +
   geom_histogram( # create the normal histogram
     bins = 20,
     fill = "lightblue",
     color = "white"
   ) + 
   labs( # create the titles 
-    title = "Distribution of Framingham Scores",
+    title = "Distribution of the Framingham Scores",
     subtitle = paste("Mean =", round(mean(Framingham$frs_10y, na.rm = TRUE), 2), "%",
     "| N =", nrow(Framingham)),
     x = "10-year cardiovascular risk (%)",
@@ -157,6 +160,7 @@ ggplot(Framingham, aes(x = frs_10y)) +
     aes(xintercept = mean(frs_10y, na.rm = TRUE)), # mean Framingham value
     color = "red", linetype = "dashed", size = 1
   )
+plot_framigham
 
 # Statistics for the Framingham distribution
 shapiro.test(Framingham$frs_10y)  # normality test
@@ -204,14 +208,14 @@ excluded
 
 ### checking distribution and mean of ASCVD score
 # Histogram + density for ASCVD scores
-ggplot(ASCVD, aes(x = ascvd_10y)) +
+plot_ASCVD <- ggplot(ASCVD, aes(x = ascvd_10y)) +
   geom_histogram( # create the normal histogram
     bins = 20,
     fill = "lightblue",
     color = "white"
   ) + 
   labs( # create the titles 
-    title = "Distribution of ASCVD Scores",
+    title = "Distribution of the ASCVD Scores",
     subtitle = paste("Mean =", round(mean(ASCVD$ascvd_10y, na.rm = TRUE), 2), "%",
     "| N =", sum(!is.na(ASCVD$ascvd_10y))
     ),
@@ -228,6 +232,7 @@ ggplot(ASCVD, aes(x = ascvd_10y)) +
     aes(xintercept = mean(ascvd_10y, na.rm = TRUE)), # mean ASCVD value
     color = "red", linetype = "dashed", size = 1
   )
+plot_ASCVD
 
 # Statistics for the ASCVD distribution
 shapiro.test(ASCVD$ascvd_10y)  # normality test
@@ -280,14 +285,14 @@ SCORE2 <- bind_rows(df_low_res, df_mod_res) %>%
 
 ### checking distribution and mean of SCORE2 
 # Histogram + density for SCORE2
-ggplot(SCORE2, aes(x = SCORE2_score)) +
+plot_SCORE2 <- ggplot(SCORE2, aes(x = SCORE2_score)) +
   geom_histogram(
     bins = 20,
     fill = "lightblue",
     color = "white"
   ) + 
   labs(
-    title = "Distribution of SCORE2 10-year Risk",
+    title = "Distribution of the SCORE2",
     subtitle = paste(
       "Mean =", round(mean(SCORE2$SCORE2_score, na.rm = TRUE), 2), "%",
       "| N =", nrow(SCORE2)
@@ -305,13 +310,39 @@ ggplot(SCORE2, aes(x = SCORE2_score)) +
     aes(xintercept = mean(SCORE2_score, na.rm = TRUE)),
     color = "red", linetype = "dashed", size = 1
   )
-
+plot_SCORE2
 
 # Statistics for the SCORE2 distribution
 shapiro.test(SCORE2$SCORE2_score)   # normality test
 summary(SCORE2$SCORE2_score)        # summary stats
 ##---------------------------------------------------------------------##
-
+# Plot QRISK3 dsitribtuion
+# QRISK3
+plot_qrisk3 <- ggplot(QRISK3_sample_ID, aes(x = QRISK3_2017)) +
+  geom_histogram(
+    bins = 20,
+    fill = "lightblue",
+    color = "white"
+  ) + 
+  labs(
+    title = "Distribution of QRISK3 Scores",
+    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_2017, na.rm = TRUE), 2), "%",
+                     "| N =", nrow(QRISK3_sample_ID)),
+    x = "10-year cardiovascular risk (%)",
+    y = "Number of participants"
+  ) +
+  geom_density(
+    aes(y = ..density.. * nrow(QRISK3_sample_ID) * 
+          diff(range(QRISK3_sample_ID$QRISK3_2017)) / 20),
+    color = "darkblue",
+    size = 1.2
+  ) +
+  geom_vline(
+    aes(xintercept = mean(QRISK3_2017, na.rm = TRUE)),
+    color = "red", linetype = "dashed", size = 1
+  )
+plot_qrisk3
+##---------------------------------------------------------------------##
 # 4. Combine the results
 ## create a joint data frame
 df_all_risk_scores <- SCORE2 %>%
@@ -326,19 +357,19 @@ df_all_risk_scores <- SCORE2 %>%
 saveRDS(df_all_risk_scores, file = file.path(wkdir, "processed_data", "df_all_risk_scores.rds"))
 
 ## histogram of the composite risk score
-ggplot(df_all_risk_scores, aes(x = mean_risk)) +
+plot_composite <- ggplot(df_all_risk_scores, aes(x = mean_risk)) +
   geom_histogram(
     bins = 20,
     fill = "lightblue",
     color = "white"
   ) + 
   labs(
-    title = "Distribution of Composite Cardiovascular Risk Score",
+    title = "Distribution of the Composite Cardiovascular Risk Score",
     subtitle = paste(
       "Mean =", round(mean(df_all_risk_scores$mean_risk, na.rm = TRUE), 2), "%",
       "| N =", sum(!is.na(df_all_risk_scores$mean_risk))
     ),
-    x = "Composite 10-year cardiovascular risk (%)",
+    x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
     geom_density(
@@ -351,7 +382,20 @@ ggplot(df_all_risk_scores, aes(x = mean_risk)) +
     aes(xintercept = mean(mean_risk, na.rm = TRUE)),
     color = "red", linetype = "dashed", size = 1
   )
+plot_composite
 
+### plotting the distribution plots in a combined figure
+combined_plot <- (plot_qrisk3 + plot_framigham + plot_ASCVD) / 
+  (plot_SCORE2 + plot_composite + plot_spacer()) &
+  theme(
+    plot.title = element_text(size = 9),
+    plot.subtitle = element_text(size = 7),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )
+
+combined_plot
+#########################
 
 ## plotting the risk scores in a combined figure
 df_long <- df_all_risk_scores %>%
@@ -423,11 +467,111 @@ as.data.frame(cor_kendall) %>% # convert the matrix into a dataframe so tidyvers
   scale_fill_gradient2(low="blue", mid="white", high="red", limits=c(-1,1)) +
   coord_equal() + #makes equal squares
   theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Kendall Correlation Between Cardiovascular Risk Scores",
-       x = "", y = "")
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+    axis.text.y = element_text(size = 14)
+    ) +
+  labs(x = "", y = "")
 
+#################---------------------------------------------#################
+# 6. QRISK3 calculation with statin exclusion
+# Option 1: Fix the Sample_ID in df_statins_supplements before joining
+qrisk_input <- QRISK3_calculation_input %>%
+  rename(Sample_ID = PatientID) %>%
+  left_join(
+    df_statins_supplements %>% 
+      mutate(Sample_ID = str_replace_all(Sample_ID, "-", "_")) %>%
+      select(Sample_ID, Statins),
+    by = "Sample_ID"
+  )
 
+qrisk_input_wo_statins <- qrisk_input %>%
+  filter(Statins == "No" | is.na(Statins))  
 
+# Create dataframe to calculate QRISK3 (every condition gets their values assigned)
+# Using statin-free participants only
+QRISK3_wo_statins <- data.frame(
+  gender = if_else(qrisk_input_wo_statins$Sex == "Female", 1,
+                   if_else(qrisk_input_wo_statins$Sex == "Male", 0, NA_integer_)),
+  age = qrisk_input_wo_statins$Age,
+  b_AF = 0, b_atypicalantipsy = 0, b_corticosteroids = 0,
+  b_impotence2 = 0, b_migraine = 0, b_ra = 0, b_renal = 0,
+  b_semi = if_else(qrisk_input_wo_statins$Severe_mental_illness == "Yes", 1, 0),
+  b_sle = 0,
+  b_treatedhyp = if_else(qrisk_input_wo_statins$blood_pressure_treatment == "Yes", 1, 0),
+  b_type1 = 0,
+  b_type2 = if_else(qrisk_input_wo_statins$diabetes2 == "Yes", 1, 0),
+  weight = qrisk_input_wo_statins$Weight_kg,
+  height = qrisk_input_wo_statins$Height_cm,
+  ethrisk = qrisk_input_wo_statins$EthnicityCodeQRISK3,
+  fh_cvd = 0,
+  rati = qrisk_input_wo_statins$ratio_chol_hdl,
+  sbp  = qrisk_input_wo_statins$systolic,
+  sbps5 = 10,
+  smoke_cat = qrisk_input_wo_statins$SmokingStatusQRISK3,
+  town = ifelse(is.na(qrisk_input_wo_statins$townsend), 0, qrisk_input_wo_statins$townsend),
+  Sample_ID = qrisk_input_wo_statins$Sample_ID) %>%  # Note: using Sample_ID not PatientID
+  mutate(ID = rownames(.)) %>%
+  filter(!if_any(everything(), is.na)) %>% # cannot have NA values
+  filter(age >= 25 & age <= 84) # must be between 25 and 84
 
+# Calculate the QRISK3
+QRISK3_scores_wo_statins <- QRISK3_2017(
+  data = QRISK3_wo_statins, 
+  patid = "ID", 
+  gender = "gender", 
+  age = "age", 
+  atrial_fibrillation = "b_AF", 
+  atypical_antipsy = "b_atypicalantipsy", 
+  regular_steroid_tablets = "b_corticosteroids", 
+  erectile_disfunction = "b_impotence2", 
+  migraine = "b_migraine", 
+  rheumatoid_arthritis = "b_ra", 
+  chronic_kidney_disease = "b_renal", 
+  severe_mental_illness = "b_semi", 
+  systemic_lupus_erythematosis = "b_sle", 
+  blood_pressure_treatment = "b_treatedhyp", 
+  diabetes1 = "b_type1", 
+  diabetes2 = "b_type2", 
+  weight = "weight", 
+  height = "height", 
+  ethiniciy = "ethrisk", 
+  heart_attack_relative = "fh_cvd", 
+  cholesterol_HDL_ratio = "rati", 
+  systolic_blood_pressure = "sbp", 
+  std_systolic_blood_pressure = "sbps5", 
+  smoke = "smoke_cat", 
+  townsend = "town"
+)
 
+QRISK3_sample_ID_wo_statins <- QRISK3_wo_statins %>%
+  inner_join(QRISK3_scores_wo_statins, by = "ID") %>%
+  select(Sample_ID, QRISK3_2017) %>%
+  rename(QRISK3_wo_statins = QRISK3_2017)
+
+# Save your dataframe with patient IDs and QRISK3 scores
+saveRDS(QRISK3_sample_ID_wo_statins, "QRISK3_sample_ID_wo_statins.RDS")
+
+ggplot(QRISK3_sample_ID_wo_statins, aes(x = QRISK3_2017)) +
+  geom_histogram(
+    bins = 20,
+    fill = "lightblue",
+    color = "white"
+  ) + 
+  labs(
+    title = "Distribution of QRISK3 Scores",
+    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID_wo_statins$QRISK3_2017, na.rm = TRUE), 2), "%",
+                     "| N =", nrow(QRISK3_sample_ID_wo_statins)),
+    x = "10-year cardiovascular risk (%)",
+    y = "Number of participants"
+  ) +
+  geom_density(
+    aes(y = ..density.. * nrow(QRISK3_sample_ID_wo_statins) * 
+          diff(range(QRISK3_sample_ID_wo_statins$QRISK3_2017)) / 20),
+    color = "darkblue",
+    size = 1.2
+  ) +
+  geom_vline(
+    aes(xintercept = mean(QRISK3_2017, na.rm = TRUE)),
+    color = "red", linetype = "dashed", size = 1
+  )
