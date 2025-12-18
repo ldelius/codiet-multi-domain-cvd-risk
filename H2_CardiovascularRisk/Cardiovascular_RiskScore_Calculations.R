@@ -96,8 +96,8 @@ risk_region_keep <- df_risk_region %>%
   mutate(
     PatientID = str_replace_all(PatientID, "-", "_"),
     Risk.region = case_when(
-      recruitment_site %in% c("CBG", "ICL") ~ "low",
-      recruitment_site %in% c("CORK", "AUTH", "UVEG") ~ "moderate",
+      recruitment_site %in% c("CBG", "ICL", "UVEG") ~ "low",
+      recruitment_site %in% c("CORK", "AUTH") ~ "moderate",
       TRUE ~ NA_character_
     )
   ) %>%
