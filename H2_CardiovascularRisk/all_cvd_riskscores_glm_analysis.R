@@ -9,46 +9,42 @@ library(readxl)
 library(lme4)
 library(broom.mixed)
 
+set.seed(42)
+
 # Set working directory
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files/processed_data"
 knitr::opts_knit$set(root.dir = wkdir)
 setwd(wkdir)
 
 # Upload the data/excel sheet
-df_all_cvd_risk_scores <- readRDS("df_all_risk_scores.rds")
-df_fatty_acids_predictors <- readRDS("df_fatty_acids_predictor_statin_suppl.rds")
-df_lipidomics_predictors <- readRDS("df_lipidomics_predictor_statin_suppl.rds")
-df_risk_factors_predictors <- readRDS("df_risk_factor_predictors.rds")
-df_REDcap_demographics_predictors <- readRDS("df_REDcap_demographics_predictor.rds")
-df_body_composition_metrics <- readRDS("df_body_composition_metrics.rds")
-df_QRISK3_wo_statins <- readRDS("QRISK3_sample_ID_wo_statins.RDS")
+df_all_cvd_risk_scores <- readRDS("df_all_risk_scores.rds") %>% arrange(PatientID)
+# df_all_cvd_risk_scores_old <- readRDS("df_all_risk_scores_old.rds")  %>% arrange(PatientID)
+df_fatty_acids_predictors <- readRDS("df_fatty_acids_predictor_statin_suppl.rds") %>% arrange(Sample_ID)
+df_lipidomics_predictors <- readRDS("df_lipidomics_predictor_statin_suppl.rds") %>% arrange(Sample_ID)
+df_risk_factors_predictors <- readRDS("df_risk_factor_predictors.rds") %>% arrange(Sample_ID)
+df_REDcap_demographics_predictors <- readRDS("df_REDcap_demographics_predictor.rds") %>% arrange(Sample_ID)
+df_body_composition_metrics <- readRDS("df_body_composition_metrics.rds") %>% arrange(Sample_ID)
 
 # Preparation for running GLM
-# 1. do a joint df with everything I want as predictors and all the risk scores. also include statins and supplements for lipids and fatty acids.
-df_all_cvd_risk_scores <- df_all_cvd_risk_scores %>%
-  full_join(df_QRISK3_wo_statins %>%
-              rename(PatientID = Sample_ID), by = "PatienID"
-            )
-
 df_cvd_scores_and_fatty_acids <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
-  full_join(df_fatty_acids_predictors %>% select(-QRISK3_2017), by = "Sample_ID")
+  full_join(df_fatty_acids_predictors %>% select(-QRISK3_risk), by = "Sample_ID")
  
 df_cvd_scores_and_lipidomics <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
-  full_join(df_lipidomics_predictors %>% select(-QRISK3_2017), by = "Sample_ID") 
+  full_join(df_lipidomics_predictors %>% select(-QRISK3_risk), by = "Sample_ID") 
 
 df_cvd_scores_and_REDcap <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
-  full_join(df_REDcap_demographics_predictors %>% select(-QRISK3_2017), by = "Sample_ID") 
+  full_join(df_REDcap_demographics_predictors %>% select(-QRISK3_risk), by = "Sample_ID") 
 
 df_cvd_scores_and_risk_factors <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
-  full_join(df_risk_factors_predictors %>% select(-QRISK3_2017), by = "Sample_ID") 
+  full_join(df_risk_factors_predictors %>% select(-QRISK3_risk), by = "Sample_ID") 
 
 df_cvd_scores_and_body_composition <- df_all_cvd_risk_scores %>%
   rename(Sample_ID = PatientID) %>% select(-SCORE2_strat) %>%
-  full_join(df_body_composition_metrics %>% select(-QRISK3_2017), by = "Sample_ID")
+  full_join(df_body_composition_metrics %>% select(-QRISK3_risk), by = "Sample_ID")
 
 df_sex_country <- df_risk_factors_predictors %>%
   select(Sample_ID, Gender, Country)
@@ -94,7 +90,7 @@ body_composition_predictors
 
 # 3. define outcomes for the model
 outcomes <- c(
-  "QRISK3_2017",
+  "QRISK3_risk",
   "SCORE2_score",
   "ascvd_10y",
   "frs_10y",
@@ -262,20 +258,17 @@ body_comp_plots <- make_all_forest_plots(
   outcomes     = outcomes)
 
 ## 5.3 Plotting
-lipid_plots[["QRISK3_2017"]]
+lipid_plots[["QRISK3_risk"]]
 lipid_plots[["SCORE2_score"]]
 lipid_plots[["ascvd_10y"]]
 lipid_plots[["frs_10y"]]
 lipid_plots[["mean_risk"]]
 
-fatty_plots[["QRISK3_2017"]]
-fatty_plots[["SCORE2_score"]]
+fatty_plots[["QRISK3_risk"]]
 
-REDcap_plots[["QRISK3_2017"]]
-REDcap_plots[["SCORE2_score"]]
+REDcap_plots[["QRISK3_risk"]]
 
-risk_fact_plots[["QRISK3_2017"]]
-risk_fact_plots[["SCORE2_score"]]
+risk_fact_plots[["QRISK3_risk"]]
 
 body_comp_plots[["SCORE2_score"]]
 
@@ -376,50 +369,6 @@ as.data.frame(cor_kendall) %>% # turn correlation matrix → data frame
     y = ""
   )
 
-# Plot Network graph style
-edges <- as.data.frame(cor_kendall) %>% # turn Kendall Matrix into an edge list
-  rownames_to_column("from") %>%
-  pivot_longer(-from, names_to = "to", values_to = "tau")
-
-# put nodes on a circle
-nodes <- data.frame(
-  name = scores,
-  angle = seq(0, 2*pi, length.out = n+1)[-1]
-) %>%
-  mutate(
-    x = cos(angle),
-    y = sin(angle)
-  )
-
-# join coordinates for drawing lines
-edges <- edges %>%
-  left_join(nodes, by = c("from" = "name")) %>%
-  rename(x1 = x, y1 = y) %>%
-  left_join(nodes, by = c("to" = "name")) %>%
-  rename(x2 = x, y2 = y)
-
-ggplot() +
-  geom_segment(
-    data = edges,
-    aes(x = x1, y = y1, xend = x2, yend = y2,
-        colour = tau, size = abs(tau))
-  ) +
-  geom_point(
-    data = nodes,
-    aes(x = x, y = y),
-    size = 5
-  ) +
-  geom_text(
-    data = nodes,
-    aes(x = x, y = y, label = name),
-    vjust = -1
-  ) +
-  scale_colour_gradient2(low = "blue", mid = "white", high = "red",
-                         limits = c(-1, 1)) +
-  scale_size(range = c(0.5, 3)) +
-  coord_equal() +
-  theme_void() +
-  ggtitle("Network-style plot of Kendall correlations between risk scores")
 
 
 ######## --------------- ########## -------------------- ############
@@ -667,7 +616,7 @@ ggplot(sig_twice_glmm,
 # 8.5 GLMM forest plots with QRISK3 only
 body_comp_glmm_plot <- make_forest_one_outcome(
   df           = glmm_body_comp_num,
-  outcome_name = "QRISK3_2017",
+  outcome_name = "QRISK3_risk",
   title_prefix = "GLMM: Body composition metrics"
 ) +
   labs(caption = "Model: QRISK3 ~ predictor + (1|Gender) + (1|Country) (Gamma, log link)") +
@@ -677,7 +626,7 @@ body_comp_glmm_plot
 # Lipids
 lipid_glmm_plot <- make_forest_one_outcome(
   df           = glmm_lipid_num,
-  outcome_name = "QRISK3_2017",
+  outcome_name = "QRISK3_risk",
   title_prefix = "GLMM: Lipids"
 ) +
   labs(caption = "Model: QRISK3 ~ predictor + (1|Statins) + (1|Supplements) (Gamma, log link)\nOutliers excluded (1st/99th percentile)") +
@@ -687,7 +636,7 @@ lipid_glmm_plot
 # Fatty acids
 fatty_glmm_plot <- make_forest_one_outcome(
   df           = glmm_fatty_num,
-  outcome_name = "QRISK3_2017",
+  outcome_name = "QRISK3_risk",
   title_prefix = "GLMM: Fatty acids"
 ) +
   labs(caption = "Model: QRISK3 ~ predictor + (1|Statins) + (1|Supplements) (Gamma, log link)\nOutliers excluded (1st/99th percentile)") +
@@ -698,7 +647,7 @@ fatty_glmm_plot
 REDcap_glmm_all <- bind_rows(glmm_REDcap_num, glmm_REDcap_fac)
 REDcap_glmm_plot <- make_forest_one_outcome(
   df           = REDcap_glmm_all,
-  outcome_name = "QRISK3_2017",
+  outcome_name = "QRISK3_risk",
   title_prefix = "GLMM: REDCap demographics"
 ) +
   labs(caption = "Model: QRISK3 ~ predictor + (1|Gender) + (1|Country) (Gamma, log link)") +
@@ -710,7 +659,7 @@ risk_glmm_all <- bind_rows(glmm_risk_num,
                            glmm_risk_fac %>% filter(term != "Age.Risk = III"))
 risk_glmm_plot <- make_forest_one_outcome(
   df           = risk_glmm_all,
-  outcome_name = "QRISK3_2017",
+  outcome_name = "QRISK3_risk",
   title_prefix = "GLMM: Clinical risk factors"
 ) +
   labs(caption = "Model: QRISK3 ~ predictor + (1|Gender) + (1|Country) (Gamma, log link)") +
