@@ -130,11 +130,11 @@ fatty_acid_predictors
 # working with lipid predictors
 glm_output_lipids <- map_dfr(lipid_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
   df_pair <- df_lipidomics_scaled_and_QRISK3 %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
   model <- glm(
-    as.formula(paste("QRISK3_2017 ~", var)),
+    as.formula(paste("QRISK3_risk ~", var)),
     data   = df_pair,
     family = Gamma(link = "log") # chose Gamma distribution given the positive, continuous, right-skewed data.
   ) # why link = log? Gamma distribution only makes sense for positive means, so by log link the predicted means are all positive. Each 1-unit increase in X increases the expected QRISK3 by e^b1.
@@ -159,11 +159,11 @@ glm_output_lipids
 # Running GLM with fatty acids
 glm_output_fatty_acids <- map_dfr(fatty_acid_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
   df_pair <- df_fatty_acids_scaled_and_QRISK3 %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
   model <- glm(
-    as.formula(paste("QRISK3_2017 ~", var)),
+    as.formula(paste("QRISK3_risk ~", var)),
     data   = df_pair,
     family = Gamma(link = "log") # chose Gamma distribution given the positive, continuous, right-skewed data.
   ) # why link = log? Gamma distribution only makes sense for positive means, so by log link the predicted means are all positive. Each 1-unit increase in X increases the expected QRISK3 by e^b1.
@@ -228,11 +228,11 @@ ggplot(glm_output_fatty_acids,
 ## 4.3 individuals plots for fatty acids
 make_plot_glm <- function(var) {
   d <- df_fatty_acids_scaled_and_QRISK3 %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
-  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_2017)) +
-    labs(x = var, y = "QRISK3_2017")
+  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_risk)) +
+    labs(x = var, y = "QRISK3_risk")
   
   if (is.factor(d[[var]])) {
     gg + geom_boxplot(outlier.shape = NA) +
@@ -257,11 +257,11 @@ lapply(
 # 4.4 individual plots for complete lipids 
 make_plot_glm <- function(var) {
   d <- df_lipidomics_scaled_and_QRISK3 %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
-  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_2017)) +
-    labs(x = var, y = "QRISK3_2017")
+  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_risk)) +
+    labs(x = var, y = "QRISK3_risk")
   
   if (is.factor(d[[var]])) {
     gg + geom_boxplot(outlier.shape = NA) +
@@ -310,11 +310,11 @@ saveRDS(df_lipidomics_scaled_QRISK3_random,
 ## run the glm with fixed effect on FATTY ACIDS
 glm_output_fatty_acids <- map_dfr(fatty_acid_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
   df_pair <- df_fatty_acids_scaled_QRISK3_random %>%
-    select(QRISK3_2017, all_of(var), Statins, Supplements) %>%
+    select(QRISK3_risk, all_of(var), Statins, Supplements) %>%
     drop_na()
   
 model <- glm(
-    as.formula(paste("QRISK3_2017 ~", var, "+ Statins + Supplements")),
+    as.formula(paste("QRISK3_risk ~", var, "+ Statins + Supplements")),
     data   = df_pair,
     family = Gamma(link = "log") # chose Gamma distribution given the positive, continuous, right-skewed data.
   ) # why link = log? Gamma distribution only makes sense for positive means, so by log link the predicted means are all positive. Each 1-unit increase in X increases the expected QRISK3 by e^b1.
@@ -351,7 +351,7 @@ ggplot(glm_output_fatty_acids,
     x = "Ratio of expected QRISK3 (exp(beta))",
     y = "Predictor",
     title = "Fatty acids (adjusted for Statins + Supplements)",
-    caption = "Model: QRISK3_2017 ~ predictor + Statins + Supplements (Gamma, log link)
+    caption = "Model: QRISK3_risk ~ predictor + Statins + Supplements (Gamma, log link)
               Red = BH-adjusted p < 0.05; Black = BH-adjusted p ≥ 0.05
               Ratios of expected QRISK3 (exp(beta)) with 95% CIs
               Outliers excluded (1st/99th percentile per predictor)
@@ -365,11 +365,11 @@ ggplot(glm_output_fatty_acids,
 ## run the glm with fixed effect on LIPIDS
 glm_output_lipids <- map_dfr(lipid_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
   df_pair <- df_lipidomics_scaled_QRISK3_random %>%
-    select(QRISK3_2017, all_of(var), Statins, Supplements) %>%
+    select(QRISK3_risk, all_of(var), Statins, Supplements) %>%
     drop_na()
   
 model <- glm(
-    as.formula(paste("QRISK3_2017 ~", var, "+ Statins + Supplements")),
+    as.formula(paste("QRISK3_risk ~", var, "+ Statins + Supplements")),
     data   = df_pair,
     family = Gamma(link = "log") # chose Gamma distribution given the positive, continuous, right-skewed data.
   ) # why link = log? Gamma distribution only makes sense for positive means, so by log link the predicted means are all positive. Each 1-unit increase in X increases the expected QRISK3 by e^b1.
@@ -406,7 +406,7 @@ ggplot(glm_output_lipids,
     x = "Ratio of expected QRISK3 (exp(beta))",
     y = "Predictor",
     title = "LIPIDS (adjusted for Statins + Supplements)",
-    caption = "Model: QRISK3_2017 ~ predictor + Statins + Supplements (Gamma, log link)
+    caption = "Model: QRISK3_risk ~ predictor + Statins + Supplements (Gamma, log link)
               Red = BH-adjusted p < 0.05; Black = BH-adjusted p ≥ 0.05
               Ratios of expected QRISK3 (exp(beta)) with 95% CIs
               Outliers excluded (1st/99th percentile per predictor)
