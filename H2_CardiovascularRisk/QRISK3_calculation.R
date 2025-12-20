@@ -149,7 +149,8 @@ QRISK3_test <- QRISK3_2017(data=QRISK3, patid="ID", gender="gender", age="age",
 # link the QRISK back to the partient!
 QRISK3_sample_ID <- QRISK3 %>%
   inner_join(QRISK3_test, by = "ID") %>%
-  select(Sample_ID, QRISK3_2017)
+  select(Sample_ID, QRISK3_2017) %>%
+  rename(QRISK3_risk = QRISK3_2017)
 ## prints out the The calculated 10-year cardiovascular risk (%) (to compare, mine is 0.1%)
 
 # Save your dataframe with patient IDs and QRISK3 scores
@@ -157,7 +158,7 @@ saveRDS(QRISK3_sample_ID, "QRISK3_sample_ID.RDS")
 
 
 # Histogram of the QRISK values
-ggplot(QRISK3_sample_ID, aes(x = QRISK3_2017)) +
+ggplot(QRISK3_sample_ID, aes(x = QRISK3_risk)) +
   geom_histogram( #create the normal histogram
     bins = 20,
     fill = "lightblue",
@@ -165,22 +166,22 @@ ggplot(QRISK3_sample_ID, aes(x = QRISK3_2017)) +
   ) + 
   labs( # create the titles 
     title = "Distribution of QRISK3 Scores",
-    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_2017, na.rm = TRUE), 2), "%",
+    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_risk, na.rm = TRUE), 2), "%",
     "| N =", nrow(QRISK3_sample_ID)),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"   )+
   geom_density( # distribution
-    aes(y = ..density.. * nrow(QRISK3_sample_ID) * diff(range(QRISK3_sample_ID$QRISK3_2017)) / 20),
+    aes(y = ..density.. * nrow(QRISK3_sample_ID) * diff(range(QRISK3_sample_ID$QRISK3_risk)) / 20),
     color = "darkblue",
     size = 1.2
   ) +
-  geom_vline(aes(xintercept = mean(QRISK3_2017, na.rm = TRUE)), # mean QRISK value
+  geom_vline(aes(xintercept = mean(QRISK3_risk, na.rm = TRUE)), # mean QRISK value
              color = "red", linetype = "dashed", size = 1
   )
 
 # Statistics to the QRISK3 distribution
-shapiro.test(QRISK3_sample_ID$QRISK3_2017) # does the data follow a normal distribution? H0 = data floows normal distribution --> <0.05 means reject H0 --> data is not normal.
-summary(QRISK3_sample_ID$QRISK3_2017)
+shapiro.test(QRISK3_sample_ID$QRISK3_risk) # does the data follow a normal distribution? H0 = data floows normal distribution --> <0.05 means reject H0 --> data is not normal.
+summary(QRISK3_sample_ID$QRISK3_risk)
 
 
 
@@ -257,46 +258,9 @@ mutate(
   `O-Acetylcarnitine`   = -`O-Acetylcarnitine`
 )
 
-################------------ outlier removal------------------##################
-# removing outlier outside 1%/99% 
-exclude_vars <- c("Age", "Body.Weight", "Height", "BMI") # excluding those from removal
 
-# slecting the numeric columns I want to use
-num_cols_trim <- df_patient_risk_for_lm %>%
-  select(where(is.numeric), -all_of(exclude_vars)) %>%
-  names()
 
-# trimming outliers to NA
-df_patient_risk_trimmed <- df_patient_risk_for_lm %>% # trimmed version: outliers → NA
-  mutate(across(all_of(num_cols_trim), function(x) {
-    lo <- quantile(x, 0.01, na.rm = TRUE)
-    hi <- quantile(x, 0.99, na.rm = TRUE)
-    ifelse(x < lo | x > hi, NA, x)
-  }))
-
-# I want to see, how many values of each column got removed
-outlier_summary <- map_dfr(num_cols, function(var) {
-  x_orig <- df_patient_risk_for_lm[[var]]
-  x_trim <- df_patient_risk_trimmed[[var]]
-  
-  n_removed <- sum(is.na(x_trim) & !is.na(x_orig))
-  n_total   <- sum(!is.na(x_orig))
-  
-  tibble(
-    variable      = var,
-    n_removed     = n_removed,
-    n_total       = n_total,
-  )
-}) %>%
-  arrange(desc(n_removed))
-
-outlier_summary
-
-# if i dont want to remove outliers, i have to change the df input name of the next step from 
-# df_patient_risk_trimmed back to df_patient_risk_for_lm and just delete the outlier removal part.
-##############------------------outlier removal end---------------###################
-
-# add the QRISK3_2017 results to the df with risk_factors
+# add the QRISK3_risk results to the df with risk_factors
 df_patient_risk_for_lm <- df_patient_risk_for_lm %>%
   rename(Sample_ID = PatientID) %>%
   inner_join(QRISK3_sample_ID, by = "Sample_ID")
@@ -310,7 +274,7 @@ df_patient_risk_for_lm %>%
 # Standardise the numeric data (zscale) for the lm
 ## I z-scaled all the numeric columns, however not the QRISK3 score. I did that, so that the predictors are comparable. Didn’t do the outcome because I want the original, interpretable units/results.
 df_scaled_patient_risk_for_lm <- df_patient_risk_for_lm %>% 
-  mutate(across(where(is.double) & !matches("QRISK3_2017"), ~ scale(.x), .names = "z_{col}")) %>%
+  mutate(across(where(is.double) & !matches("QRISK3_risk"), ~ scale(.x), .names = "z_{col}")) %>%
   rename_with(function(x) gsub("[- ]", "_", x))
 
 saveRDS(df_scaled_patient_risk_for_lm,
@@ -330,10 +294,10 @@ predictors
 # one lm per predictor, dropping NAs only for that predictor + outcome
 lm_output <- map_dfr(predictors, function(var) { # runs the function over each variable and collects them in a df.
   df_pair <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_2017, all_of(var)) %>% # selects always one variable and the QRISK score
+    select(QRISK3_risk, all_of(var)) %>% # selects always one variable and the QRISK score
     drop_na() # and drops the NAs specific for those columns. 
   
-  model <- lm(as.formula(paste("QRISK3_2017 ~", var)), data = df_pair)
+  model <- lm(as.formula(paste("QRISK3_risk ~", var)), data = df_pair)
   sw <- shapiro.test(residuals(model))  # this is to test the disitribution of the residuals of the lm in order to see, whether I used the fitting linear model.
   
   tidy(model, conf.int = TRUE) %>% # returns a clean tibble
@@ -374,11 +338,11 @@ plot_predictors <- c(num_predictors, factor_predictors)
 glm_output_num <- map_dfr(num_predictors, function(var) {
   
   df_pair <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
   model <- glm(
-    as.formula(paste("QRISK3_2017 ~", var)),
+    as.formula(paste("QRISK3_risk ~", var)),
     data   = df_pair,
     family = Gamma(link = "log")
   )
@@ -398,7 +362,7 @@ glm_output_num <- map_dfr(num_predictors, function(var) {
 glm_output_fac <- map_dfr(factor_predictors, function(var) {
   
   df_pair <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
   levs <- levels(df_pair[[var]])
@@ -409,7 +373,7 @@ glm_output_fac <- map_dfr(factor_predictors, function(var) {
       mutate(dummy = if_else(.data[[var]] == lev, 1, 0))
     
     model <- glm(
-      QRISK3_2017 ~ dummy,
+      QRISK3_risk ~ dummy,
       data   = df_tmp,
       family = Gamma(link = "log")
     )
@@ -448,7 +412,7 @@ predictors
 glmm_gender_country <- map_dfr(predictors, function(var) {
   
   df_pair <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_2017, Gender, Country, all_of(var)) %>%
+    select(QRISK3_risk, Gender, Country, all_of(var)) %>%
     drop_na()
   
   if (nrow(df_pair) == 0 || n_distinct(df_pair$Country) < 2) {
@@ -456,7 +420,7 @@ glmm_gender_country <- map_dfr(predictors, function(var) {
     return(tibble())
   }
   
-  form <- as.formula(paste("QRISK3_2017 ~", var, "+ (1 | Gender) + (1 | Country)")) # fixed effect = predictor, random effect = Gender (&Country)
+  form <- as.formula(paste("QRISK3_risk ~", var, "+ (1 | Gender) + (1 | Country)")) # fixed effect = predictor, random effect = Gender (&Country)
   
   model <- lme4::glmer(
     form,
@@ -485,11 +449,11 @@ glmm_gender_country <- map_dfr(predictors, function(var) {
 # one plot per predictor (handles NA per predictor)
 make_plot <- function(var) {
   d <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_2017, all_of(var))%>%
+    select(QRISK3_risk, all_of(var))%>%
     drop_na()
   
-  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_2017)) +
-    labs(x = var, y = "QRISK3_2017")
+  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_risk)) +
+    labs(x = var, y = "QRISK3_risk")
   
   if (is.factor(d[[var]])) {
     gg + geom_boxplot(outlier.shape = NA) +
@@ -518,7 +482,7 @@ ggplot(lm_output,
   geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2) +
   geom_point() +
   labs(
-    x = "Effect on QRISK3_2017",
+    x = "Effect on QRISK3_risk",
     y = "Predictor",
     title = "LM with 95% CIs (BH-adjusted ordering)"
   ) +
@@ -534,11 +498,11 @@ ord <- glm_output %>%
 # creating single-predictor plots
 make_plot_glm <- function(var) {
   d <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
-  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_2017)) +
-    labs(x = var, y = "QRISK3_2017")
+  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_risk)) +
+    labs(x = var, y = "QRISK3_risk")
   
   if (is.factor(d[[var]])) {
     gg + geom_boxplot(outlier.shape = NA) +
@@ -617,7 +581,7 @@ ggplot(glmm_plot %>%
     x = "Ratio of expected QRISK3 (exp(beta))",
     y = "Predictor",
     title   = "GLMM with random intercept for Gender & Country",
-    caption = "Model: QRISK3_2017 ~ predictor + (1 | Gender) + (1 | Country)\nBlack = p ≥ 0.05, Red = p < 0.05 (BH correction)\n95% CIs on ratio scale\nn varies by predictor\nSkipping z_Fasted.NEFA.mmol.L and z_Fasted.Insulin.pmol.l as only one Country level in subset after drop_na()."
+    caption = "Model: QRISK3_risk ~ predictor + (1 | Gender) + (1 | Country)\nBlack = p ≥ 0.05, Red = p < 0.05 (BH correction)\n95% CIs on ratio scale\nn varies by predictor\nSkipping z_Fasted.NEFA.mmol.L and z_Fasted.Insulin.pmol.l as only one Country level in subset after drop_na()."
   ) +
   theme(
     axis.text.y = element_text(size = 6),
