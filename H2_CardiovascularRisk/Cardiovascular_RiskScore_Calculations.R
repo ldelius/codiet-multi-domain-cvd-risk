@@ -35,9 +35,9 @@ df_Blood_Pressure     <- read_excel("cardiovascular_riskfactor_calculations.xlsx
 df_age_risk_factor_sheet <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Age_risk_factor_sheet")
 df_risk_region <- read_excel("cardiovascular_riskfactor_calculations.xlsx", sheet = "Risk_region")
 QRISK3_sample_ID <- readRDS("QRISK3_sample_ID.RDS") ### this has to be exchanged if i change anything of the QRISK input data of courese!!!
-QRISK3_calculation_input <- readRDS("QRISK3_calculation_input.rds")
+QRISK3_calculation_input <- readRDS("processed_data/QRISK3_calculation_input.rds")
 df_statins_supplements <- read_excel("Statins_Supplements.xlsx")
-df_risk_factor_sheet <-readRDS("df_risk_factor_predictors.rds")
+df_risk_factor_sheet <-readRDS("processed_data/df_risk_factor_predictors.rds")
   
 # cleaning the data, so that it can be used for risk score calculations
 ## working on blood_pressure: change to SampleID, - to _, ...
@@ -111,7 +111,6 @@ risk_factor_input <- maindata_keep %>%
   full_join(risk_region_keep, by = "PatientID")
 
 saveRDS(risk_factor_input, file.path(wkdir, "processed_data", "ASCVD_SCORE2_Framingham_input.rds"))
-
 
 ###################### Risk score calulations ######################
 ## 1. Framingham Score
@@ -194,17 +193,17 @@ ASCVD <- data.frame(
   )
 
 # just checking the people that got excluded because they have values outside specific ranges
-ASCVD %>%
-  filter(is.na(ascvd_10y)) %>%
-  select(PatientID, age, totchol, hdl, sbp)
+#ASCVD %>%
+#  filter(is.na(ascvd_10y)) %>%
+#  select(PatientID, age, totchol, hdl, sbp)
 
 # checking how many people we loose because of LDL exclusion
-excluded <- risk_factor_input %>%
-  filter(is.na(mean_LDL_mg_dl) |
-           mean_LDL_mg_dl < 70 |
-           mean_LDL_mg_dl > 189) %>%
-  select(PatientID, mean_LDL_mg_dl)
-excluded
+#excluded <- risk_factor_input %>%
+#  filter(is.na(mean_LDL_mg_dl) |
+#           mean_LDL_mg_dl < 70 |
+#           mean_LDL_mg_dl > 189) %>%
+#  select(PatientID, mean_LDL_mg_dl)
+#excluded
 
 ### checking distribution and mean of ASCVD score
 # Histogram + density for ASCVD scores
@@ -318,7 +317,7 @@ summary(SCORE2$SCORE2_score)        # summary stats
 ##---------------------------------------------------------------------##
 # Plot QRISK3 dsitribtuion
 # QRISK3
-plot_qrisk3 <- ggplot(QRISK3_sample_ID, aes(x = QRISK3_2017)) +
+plot_qrisk3 <- ggplot(QRISK3_sample_ID, aes(x = QRISK3_risk)) +
   geom_histogram(
     bins = 20,
     fill = "lightblue",
@@ -326,19 +325,19 @@ plot_qrisk3 <- ggplot(QRISK3_sample_ID, aes(x = QRISK3_2017)) +
   ) + 
   labs(
     title = "Distribution of QRISK3 Scores",
-    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_2017, na.rm = TRUE), 2), "%",
+    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_risk, na.rm = TRUE), 2), "%",
                      "| N =", nrow(QRISK3_sample_ID)),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
   geom_density(
     aes(y = ..density.. * nrow(QRISK3_sample_ID) * 
-          diff(range(QRISK3_sample_ID$QRISK3_2017)) / 20),
+          diff(range(QRISK3_sample_ID$QRISK3_risk)) / 20),
     color = "darkblue",
     size = 1.2
   ) +
   geom_vline(
-    aes(xintercept = mean(QRISK3_2017, na.rm = TRUE)),
+    aes(xintercept = mean(QRISK3_risk, na.rm = TRUE)),
     color = "red", linetype = "dashed", size = 1
   )
 plot_qrisk3
@@ -350,7 +349,7 @@ df_all_risk_scores <- SCORE2 %>%
   full_join(Framingham %>% select(PatientID, frs_10y),by = "PatientID") %>%
   full_join(QRISK3_sample_ID %>% rename(PatientID = Sample_ID), by = "PatientID") %>%
   mutate(mean_risk = rowMeans( #calculate an average value for each patient --> composite score
-    select(., SCORE2_score, ascvd_10y, frs_10y, QRISK3_2017),
+    select(., SCORE2_score, ascvd_10y, frs_10y, QRISK3_risk),
     na.rm = TRUE
   ))
 
@@ -400,7 +399,7 @@ combined_plot
 ## plotting the risk scores in a combined figure
 df_long <- df_all_risk_scores %>%
   pivot_longer(
-    cols = c(SCORE2_score, ascvd_10y, frs_10y, QRISK3_2017),
+    cols = c(SCORE2_score, ascvd_10y, frs_10y, QRISK3_risk),
     names_to = "score_type",
     values_to = "risk"
   ) %>%
@@ -424,7 +423,7 @@ ggplot(df_long, aes(x = score_type, y = risk)) +
   scale_fill_discrete(
     labels = c(
       "SCORE2_score" = "SCORE2",
-      "QRISK3_2017"  = "QRISK3",
+      "QRISK3_risk"  = "QRISK3",
       "ascvd_10y"    = "ASCVD",
       "frs_10y"      = "Framingham"
     )
@@ -448,7 +447,7 @@ ggplot(df_long, aes(x = score_type, y = risk)) +
 ## create Kendall's Tau correlation matrix
 # subset relevant columns
 risk_mat <- df_all_risk_scores %>%
-  select(SCORE2_score, ascvd_10y, frs_10y, QRISK3_2017, mean_risk)
+  select(SCORE2_score, ascvd_10y, frs_10y, QRISK3_risk, mean_risk)
 
 # Kendall correlation matrix
 cor_kendall <- cor(risk_mat, method = "kendall", use = "pairwise.complete.obs") 
@@ -544,6 +543,7 @@ QRISK3_scores_wo_statins <- QRISK3_2017(
   townsend = "town"
 )
 
+
 QRISK3_sample_ID_wo_statins <- QRISK3_wo_statins %>%
   inner_join(QRISK3_scores_wo_statins, by = "ID") %>%
   select(Sample_ID, QRISK3_2017) %>%
@@ -552,26 +552,26 @@ QRISK3_sample_ID_wo_statins <- QRISK3_wo_statins %>%
 # Save your dataframe with patient IDs and QRISK3 scores
 saveRDS(QRISK3_sample_ID_wo_statins, "QRISK3_sample_ID_wo_statins.RDS")
 
-ggplot(QRISK3_sample_ID_wo_statins, aes(x = QRISK3_2017)) +
+ggplot(QRISK3_sample_ID_wo_statins, aes(x = QRISK3_wo_statins)) +
   geom_histogram(
     bins = 20,
     fill = "lightblue",
     color = "white"
   ) + 
   labs(
-    title = "Distribution of QRISK3 Scores",
-    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID_wo_statins$QRISK3_2017, na.rm = TRUE), 2), "%",
+    title = "Distribution of QRISK3 Scores w/o Statins",
+    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID_wo_statins$QRISK3_wo_statins, na.rm = TRUE), 2), "%",
                      "| N =", nrow(QRISK3_sample_ID_wo_statins)),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
   geom_density(
     aes(y = ..density.. * nrow(QRISK3_sample_ID_wo_statins) * 
-          diff(range(QRISK3_sample_ID_wo_statins$QRISK3_2017)) / 20),
+          diff(range(QRISK3_sample_ID_wo_statins$QRISK3_wo_statins)) / 20),
     color = "darkblue",
     size = 1.2
   ) +
   geom_vline(
-    aes(xintercept = mean(QRISK3_2017, na.rm = TRUE)),
+    aes(xintercept = mean(QRISK3_wo_statins, na.rm = TRUE)),
     color = "red", linetype = "dashed", size = 1
   )
