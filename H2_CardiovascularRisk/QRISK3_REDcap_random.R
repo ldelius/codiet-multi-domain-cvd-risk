@@ -141,11 +141,11 @@ factor_predictors <- df_other_cleaned_and_QRISK %>%
 # 2. GLMs for numeric predictors
 glm_output_num <- map_dfr(numeric_predictors, function(var) { # loops over all the predictors, fits a seperate model each and bins together
   df_pair <- df_other_cleaned_and_QRISK %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
   model <- glm(
-    as.formula(paste("QRISK3_2017 ~", var)),
+    as.formula(paste("QRISK3_risk ~", var)),
     data   = df_pair,
     family = Gamma(link = "log") # chose Gamma distribution given the positive, continuous, right-skewed data.
   ) # why link = log? Gamma distribution only makes sense for positive means, so by log link the predicted means are all positive. Each 1-unit increase in X increases the expected QRISK3 by e^b1.
@@ -162,7 +162,7 @@ glm_output_num <- map_dfr(numeric_predictors, function(var) { # loops over all t
 # 3. GLM factor predictors
 glm_output_fac <- map_dfr(factor_predictors, function(var) {
   df_pair <- df_other_cleaned_and_QRISK %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
   levs <- levels(df_pair[[var]])
@@ -172,7 +172,7 @@ glm_output_fac <- map_dfr(factor_predictors, function(var) {
       mutate(dummy = if_else(.data[[var]] == lev, 1, 0))
     
     model <- glm(
-      QRISK3_2017 ~ dummy,
+      QRISK3_risk ~ dummy,
       data   = df_tmp,
       family = Gamma(link = "log")
     )
@@ -211,11 +211,11 @@ plot_predictors <- c(numeric_predictors, factor_predictors)
 
 make_plot_glm <- function(var) {
   d <- df_other_cleaned_and_QRISK %>%
-    select(QRISK3_2017, all_of(var)) %>%
+    select(QRISK3_risk, all_of(var)) %>%
     drop_na()
   
-  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_2017)) +
-    labs(x = var, y = "QRISK3_2017")
+  gg <- ggplot(d, aes(x = .data[[var]], y = QRISK3_risk)) +
+    labs(x = var, y = "QRISK3_risk")
   
   if (is.factor(d[[var]])) {
     gg + geom_boxplot(outlier.shape = NA) +
