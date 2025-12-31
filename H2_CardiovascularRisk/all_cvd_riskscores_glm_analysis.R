@@ -491,19 +491,54 @@ all_results_glmm <- bind_rows(
   glmm_body_comp_num %>% mutate(predictor_set = "Body composition")
 ) %>%
   mutate(
-    term_plot = if_else(is.na(level), predictor, term)  
+    term_plot = if_else(is.na(level), predictor, term),
+    p.adjusted = p.adjust(p.value, method = "BH"),
+    significant_adjusted = if_else(p.adjusted < 0.05, "Significant", "Not significant")
+  )
+
+#### Predictors that are significant based on p-adj (BH) ####
+# Keep only results significant after BH adjustment
+all_results_glmm_sig <- all_results_glmm %>%
+  filter(p.adjusted < 0.05)
+
+# Create factor levels for current significant results
+term_levels_padj <- sig_padj_glmm %>%
+  arrange(predictor_set, term_plot) %>%
+  pull(term_plot) %>%
+  unique()
+
+# Plot
+ggplot(sig_padj_glmm,
+       aes(x = outcome, y = factor(term_plot, levels = term_levels_padj), fill = direction)
+) +
+  geom_tile(colour = "white") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  scale_fill_manual(values = c("Lower risk" = "#3cb371", "Higher risk" = "#d73027")) +
+  labs(
+    x = "Cardiovascular risk score",
+    y = "Predictor",
+    fill = "",
+    title = "GLMM: Predictors with BH-adjusted p < 0.05",
+    caption = "Model: outcome ~ predictor + (1|random effects) (Gamma, log link)\nRandom effects: Gender & Country (REDCap, Risk factors, Body composition)\nRandom effects: Statins & Supplements (Lipids, Fatty acids)\nOutliers excluded (1st/99th percentile) for Lipids & Fatty acids only"
+  ) +
+  theme(
+    axis.text.x = element_text(size = 6),
+    axis.text.y = element_text(size = 8),
+    panel.background = element_rect(fill = "white"),
+    plot.caption = element_text(size = 6, hjust = 1),
+    strip.text.y = element_text(size = 8, face = "bold", angle = 0)
   )
 
 # Significant predictors only
-sig_only_glmm <- all_results_glmm %>% 
-  filter(significant == "Significant") %>%
-  mutate(
-    direction = case_when(
-      estimate < 1 ~ "Lower risk",
-      estimate > 1 ~ "Higher risk",
-      TRUE         ~ NA_character_
-    )
-  )
+# sig_only_glmm <- all_results_glmm %>% 
+#   filter(significant == "Significant") %>%
+#   mutate(
+#     direction = case_when(
+#       estimate < 1 ~ "Lower risk",
+#       estimate > 1 ~ "Higher risk",
+#       TRUE         ~ NA_character_
+#     )
+#   )
 
 # Order: direction first, then count of significance
 term_levels_facet <- sig_only_glmm %>%
