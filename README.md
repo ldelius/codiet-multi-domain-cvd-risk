@@ -15,6 +15,26 @@ We applied generalised liner model (GLM) and elastic net regression approaches t
 This repository contains the full analysis pipeline used for data preprocessing, model training, evaluation, and visualisation.
 
 ## Repository Structure / Mapping Thesis Sections to Code
+#### Chapter 3.1 – Cardiovascular Risk Scores
+
+The calculation and aggregation of cardiovascular risk scores reported in Chapter 3.1 of the thesis are implemented as follows:
+
+- **QRISK3 Score**
+  - Calculation script: [`QRISK3_calculation.R`](H2_CardiovascularRisk/QRISK3_calculation.R)
+  - Input data: [`QRISK3_calculation_input.rds`](Teams_Files/processed_data/QRISK3_calculation_input.rds)
+  - *Note:* QRISK3 was calculated separately from the other risk scores, as it was the first score implemented in the project.
+
+- **ASCVD, SCORE2, Framingham, Composite score**
+  - Calculation script: [`Cardiovascular_RiskScore_Calculation.R`](H2_CardiovascularRisk/Cardiovascular_RiskScore_Calculation.R)
+  - Input data: [`ASCVD_SCORE2_Framingham_input.rds`](Teams_Files/processed_data/ASCVD_SCORE2_Framingham_input.rds)
+
+- **Combined output**
+  - [`df_all_risk_scores.rds`](Teams_Files/processed_data/df_all_risk_scores.rds)
+  - Contains the final results for all calculated cardiovascular risk scores used in downstream analyses.
+
+- **Figures**
+  - All figures presented in Chapter 3.1 (*Cardiovascular Risk Scores*) were generated within  
+    `Cardiovascular_RiskScore_Calculation.R`.
 
 
 ## Reproducibility
