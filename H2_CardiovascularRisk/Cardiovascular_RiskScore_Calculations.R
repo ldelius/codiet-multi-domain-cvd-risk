@@ -15,6 +15,7 @@ library(QRISK3)
 library(readxl)
 library(CVrisk)
 library(RiskScorescvd)
+library(flextable)
 
 # Set working directory
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files"
@@ -143,7 +144,7 @@ plot_framigham <- ggplot(Framingham, aes(x = frs_10y)) +
     color = "white"
   ) + 
   labs( # create the titles 
-    title = "Distribution of the Framingham Scores",
+    title = "Distribution of the Framingham Score",
     subtitle = paste("Mean =", round(mean(Framingham$frs_10y, na.rm = TRUE), 2), "%",
     "| N =", nrow(Framingham)),
     x = "10-year cardiovascular risk (%)",
@@ -192,7 +193,7 @@ ASCVD <- data.frame(
     )
   )
 
-# just checking the people that got excluded because they have values outside specific ranges
+# just checking the people that got excluded because of their values outside specific ranges
 #ASCVD %>%
 #  filter(is.na(ascvd_10y)) %>%
 #  select(PatientID, age, totchol, hdl, sbp)
@@ -214,7 +215,7 @@ plot_ASCVD <- ggplot(ASCVD, aes(x = ascvd_10y)) +
     color = "white"
   ) + 
   labs( # create the titles 
-    title = "Distribution of the ASCVD Scores",
+    title = "Distribution of the ASCVD Score",
     subtitle = paste("Mean =", round(mean(ASCVD$ascvd_10y, na.rm = TRUE), 2), "%",
     "| N =", sum(!is.na(ASCVD$ascvd_10y))
     ),
@@ -291,7 +292,7 @@ plot_SCORE2 <- ggplot(SCORE2, aes(x = SCORE2_score)) +
     color = "white"
   ) + 
   labs(
-    title = "Distribution of the SCORE2",
+    title = "Distribution of the SCORE2 Score",
     subtitle = paste(
       "Mean =", round(mean(SCORE2$SCORE2_score, na.rm = TRUE), 2), "%",
       "| N =", nrow(SCORE2)
@@ -324,7 +325,7 @@ plot_qrisk3 <- ggplot(QRISK3_sample_ID, aes(x = QRISK3_risk)) +
     color = "white"
   ) + 
   labs(
-    title = "Distribution of QRISK3 Scores",
+    title = "Distribution of QRISK3 Score",
     subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_risk, na.rm = TRUE), 2), "%",
                      "| N =", nrow(QRISK3_sample_ID)),
     x = "10-year cardiovascular risk (%)",
@@ -383,6 +384,12 @@ plot_composite <- ggplot(df_all_risk_scores, aes(x = mean_risk)) +
   )
 plot_composite
 
+###########################################################################
+## Plotting the CVD score results in combined figures
+###########################################################################
+
+figures_path <- "/Users/luisadelius/Documents/Code/project_one/Figures"
+
 ### plotting the distribution plots in a combined figure
 combined_plot <- (plot_qrisk3 + plot_framigham + plot_ASCVD) / 
   (plot_SCORE2 + plot_composite + plot_spacer()) &
@@ -394,6 +401,15 @@ combined_plot <- (plot_qrisk3 + plot_framigham + plot_ASCVD) /
   )
 
 combined_plot
+
+# Save Figure 1: Combined distribution plots
+ggsave(
+  filename = file.path(figures_path, "CVD_risk_distributions.png"),
+  plot = combined_plot,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
 #########################
 
 ## plotting the risk scores in a combined figure
@@ -421,6 +437,17 @@ ggplot(df_long, aes(x = score_type, y = risk)) +
   
   # change legend
   scale_fill_discrete(
+    name = "Score Type", 
+    labels = c(
+      "SCORE2_score" = "SCORE2",
+      "QRISK3_risk"  = "QRISK3",
+      "ascvd_10y"    = "ASCVD",
+      "frs_10y"      = "Framingham"
+    )
+  ) +
+  
+  # change x-axis labels
+  scale_x_discrete(
     labels = c(
       "SCORE2_score" = "SCORE2",
       "QRISK3_risk"  = "QRISK3",
@@ -430,7 +457,7 @@ ggplot(df_long, aes(x = score_type, y = risk)) +
   ) +
   
   labs(
-    title = "Cardiovascular Risk Scores per Patient",
+    title = "Cardiovascular Risk Score per Patient",
     x = "Score Type",
     y = "10-year Risk (%)"
   ) +
@@ -440,8 +467,17 @@ ggplot(df_long, aes(x = score_type, y = risk)) +
     axis.text.x = element_text(angle = 25, hjust = 1)
   )
 
-##---------------------------------------------------------------------##
+# Save Figure 2: Violin plot
+ggsave(
+  filename = file.path(figures_path, "CVD_risk_comparison.png"),
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+###########################################################################
 # 5. Correlate the 4 risk scores & composite score with each other and plot heatmap style
+###########################################################################
 ?cor(x, y, method = "kendall")
 
 ## create Kendall's Tau correlation matrix
@@ -462,8 +498,31 @@ as.data.frame(cor_kendall) %>% # convert the matrix into a dataframe so tidyvers
   pivot_longer(-var1, names_to = "var2", values_to = "tau") %>%
   ggplot(aes(var1, var2, fill = tau)) + # xaxis 1st variable, yaxis 2nd variable, tau = color
   geom_tile() +
-  geom_text(aes(label = round(tau, 2))) +
+  geom_text(aes(label = round(tau, 2)), size = 5) +
   scale_fill_gradient2(low="blue", mid="white", high="red", limits=c(-1,1)) +
+  
+  # relabel x-axis
+  scale_x_discrete(
+    labels = c(
+      "SCORE2_score" = "SCORE2",
+      "QRISK3_risk"  = "QRISK3",
+      "ascvd_10y"    = "ASCVD",
+      "frs_10y"      = "Framingham",
+      "mean_risk"    = "Mean Risk"
+    )
+  ) +
+  
+  # relabel y-axis
+  scale_y_discrete(
+    labels = c(
+      "SCORE2_score" = "SCORE2",
+      "QRISK3_risk"  = "QRISK3",
+      "ascvd_10y"    = "ASCVD",
+      "frs_10y"      = "Framingham",
+      "mean_risk"    = "Mean Risk"
+    )
+  ) +
+  
   coord_equal() + #makes equal squares
   theme_minimal() +
   theme(
@@ -472,8 +531,73 @@ as.data.frame(cor_kendall) %>% # convert the matrix into a dataframe so tidyvers
     ) +
   labs(x = "", y = "")
 
-#################---------------------------------------------#################
+# Save Figure 3: Correlation heatmap (save the last plot)
+ggsave(
+  filename = file.path(figures_path, "CVD_risk_correlations.png"),
+  width = 7,
+  height = 6,
+  dpi = 300
+)
+
+
+###########################################################################
+#. Supplementary Figure with CVD score input and outcomes
+###########################################################################
+CVD_input_plus_outcome <- df_all_risk_scores %>%
+  select(-SCORE2_strat)%>%
+  full_join(risk_factor_input, by = "PatientID") %>%
+  select(-Sex, -race_ascvd, -SmokingStatusQRISK3, -Diabetes, 
+         -blood_pressure_treatment, -mean_LDL_mg_dl, -systolic, -Age) %>%
+  full_join(QRISK3_calculation_input, by = "PatientID") 
+
+# # Prepare the data
+# CVD_table <- CVD_input_plus_outcome %>%
+#   filter(!is.na(mean_risk)) %>%  # Exclude participants with NA in mean_risk
+#   select(
+#     PatientID, Age, Sex, systolic, blood_pressure_treatment, 
+#     SmokingStatusQRISK3, Weight_kg, Height_cm, diabetes2, 
+#     Severe_mental_illness, EthnicityCodeQRISK3, townsend, 
+#     Risk.region, ratio_chol_hdl, mean_Total_Cholesterol_mg_dl, 
+#     mean_HDL_mg_dl, SCORE2_score, ascvd_10y, frs_10y, 
+#     QRISK3_risk, mean_risk
+#   ) %>%
+#   arrange(PatientID) %>%  # Sort by PatientID
+#   mutate(across(where(is.numeric), ~round(., 2))) %>%  # Round to 2 decimal places
+#   rename(
+#     Composite = mean_risk,
+#     SCORE2 = SCORE2_score,
+#     ASCVD = ascvd_10y,
+#     Framingham = frs_10y,
+#     QRISK3 = QRISK3_risk
+#   )
+
+# # Create flextable with smaller size and minimal spacing
+# ft_cvd <- flextable(CVD_table) %>%
+#   theme_booktabs() %>%
+#   colformat_double(digits = 2, na_str = "NA") %>%
+#   height_all(height = 0.15) %>%  # Minimal row height
+#   hrule(rule = "exact") %>%  # Enforce exact row heights
+#   set_table_properties(width = 1, layout = "autofit") %>%
+#   autofit()
+# 
+# ft_cvd
+# 
+# # Save the table in landscape orientation
+# save_as_docx(
+#   ft_cvd, 
+#   path = file.path(figures_path, "CVD_input_output_table.docx"),
+#   pr_section = prop_section(
+#     page_size = page_size(orient = "landscape"),
+#     page_margins = page_mar(bottom = 0.5, top = 0.5, right = 0.5, left = 0.5)
+#   )
+# )
+
+
+
+
+###########################################################################
 # 6. QRISK3 calculation with statin exclusion
+###########################################################################
 # Option 1: Fix the Sample_ID in df_statins_supplements before joining
 qrisk_input <- QRISK3_calculation_input %>%
   rename(Sample_ID = PatientID) %>%
