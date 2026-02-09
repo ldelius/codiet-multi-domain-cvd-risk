@@ -35,6 +35,7 @@ The calculation and aggregation of cardiovascular risk scores reported in Chapte
 - **Figures**
   - All figures presented in Chapter 3.1 (*Cardiovascular Risk Scores*) were generated within  
     `Cardiovascular_RiskScore_Calculation.R`.
+  - The supplementary figure showing CVD risk score input variables and CVD Score results was generated within the same script.
 
 
 ## Reproducibility
