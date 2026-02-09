@@ -7,6 +7,11 @@ WIP: Cardiovascular disease (CVD) remains a leading cause of morbidity and morta
 This thesis investigates features associated with established CVD risk scores using multi-domain data from the CoDiet cohort, including lipidomics, fatty acids, urine NMR, body composition, clinical risk factors and socio-demographic variables.
 We applied generalised liner model (GLM) and elastic net regression approaches to assess associations and predictive performance and identify contributors to CVD risk.
 
+<p align="center">
+  <img src="figures/graphical_abstract.png" width="700">
+</p>
+**Figure 1.** Graphical abstract illustrating the data sources and workflow used in this thesis.
+<br><br>
 This repository contains the full analysis pipeline used for data preprocessing, model training, evaluation, and visualisation.
 
 ## Repository Structure / Mapping Thesis Sections to Code
