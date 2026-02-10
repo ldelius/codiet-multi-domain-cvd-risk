@@ -68,6 +68,14 @@ Two analysis-ready datasets were generated for different modelling frameworks:
   - Preprocessing script: [`Body_composition_metrics.R`](Body_composition_metrics.R)
   - The resulting z-scaled, analysis-ready dataset is stored as: [`df_body_composition_metrics.rds`](df_body_composition_metrics.rds)
 
+#### Chapter 3.2 – GLM Analysis
+
+Associations between predictors and CVD scores reported in Chapter 3.2 of the thesis were analysed using generalised linear models.
+[`FixedEffectAssociations.R`](FixedEffectAssociations.R) stores
+- Data preparation, model fitting, and output generation for the GLM analyses
+- Figure generation for figures presented in Chapter 3.2
+- Produces supplementary tables summarising covariate effects and full GLM results
+
 
 ## Reproducibility
 
