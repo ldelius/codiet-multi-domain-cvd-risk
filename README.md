@@ -54,6 +54,20 @@ Two analysis-ready datasets were generated for different modelling frameworks:
   - The resulting analysis-ready dataset is stored as: [`df_risk_factor_predictors.rds`](df_risk_factor_predictors.rds) (Contains z-scaled continuous variables, processed factor variables, and the transformed urine tpred score.)
   - Predictors from this dataset that were conceptually better aligned with other data domains were joint those datasets for the GLM and elastic net regression analyses.
 
+- **Fatty Acid and Lipidomics Predictors**
+  - Preprocessing script: [`QRISK3_lipidomics.R`](QRISK3_lipidomics.R)
+  - The resulting analysis-ready datasets are stored as (Outliers were removed using the 1st/99th percentile thresholds and continuous variables were z-scaled.):
+    - Fatty acids: [`df_fatty_acids_predictor_statin_suppl.rds`](df_fatty_acids_predictor_statin_suppl.rds)  
+    - Lipidomics: [`df_lipidomics_predictor_statin_suppl.rds`](df_lipidomics_predictor_statin_suppl.rds)
+
+- **Urine NMR Predictors**
+  - Preprocessing script: [`urine_nmr_data.R`](urine_nmr_data.R)
+  - The resulting z-scaled, analysis-ready dataset is stored as: [`df_urine_NMR_data.rds`](df_urine_NMR_data.rds)
+
+- **Body Composition Predictors**
+  - Preprocessing script: [`Body_composition_metrics.R`](Body_composition_metrics.R)
+  - The resulting z-scaled, analysis-ready dataset is stored as: [`df_body_composition_metrics.rds`](df_body_composition_metrics.rds)
+
 
 ## Reproducibility
 
