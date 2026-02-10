@@ -48,6 +48,12 @@ Two analysis-ready datasets were generated for different modelling frameworks:
   - GLM: [`df_REDcap_demographics_predictor.rds`](df_REDcap_demographics_predictor.rds) (Contains z-scaled sociodemographic predictors with variables and observations excluded based on small sample sizes.)
   - Elastic Net Regression: [`df_REDcap_demographics_ElaNet.rds`](df_REDcap_demographics_ElaNet.rds) (Contains cleaned but non–z-scaled sociodemographic predictors without exclusion.)
 
+- **Risk Factor Dataset**
+  - This dataset comprises sociodemographic variables, body composition metrics, clinical measurements, and selected faecal and urinary metabolites.
+  - Preprocessing script: [`QRISK3_calculation.R`](QRISK3_calculation.R)
+  - The resulting analysis-ready dataset is stored as: [`df_risk_factor_predictors.rds`](df_risk_factor_predictors.rds) (Contains z-scaled continuous variables, processed factor variables, and the transformed urine tpred score.)
+  - Predictors from this dataset that were conceptually better aligned with other data domains were joint those datasets for the GLM and elastic net regression analyses.
+
 
 ## Reproducibility
 
