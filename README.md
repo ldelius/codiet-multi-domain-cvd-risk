@@ -37,6 +37,17 @@ The calculation and aggregation of cardiovascular risk scores reported in Chapte
     `Cardiovascular_RiskScore_Calculation.R`.
   - The supplementary figure showing CVD risk score input variables and CVD Score results was generated within the same script.
 
+#### Predictor Preparation
+
+Predictor datasets used for GLM, Regression Model Comparison, and Elastic Net Analysis were preprocessed separately from outcome generation to ensure consistency across modelling approaches.  
+All predictor preparation steps are documented in dedicated preprocessing scripts, with analysis-ready datasets stored as `.rds` files.
+
+- **Sociodemographic Predictors**
+  - Preprocessing script: [`QRISK3_REDcap_random.R`](QRISK3_REDcap_random.R)
+Two analysis-ready datasets were generated for different modelling frameworks:
+  - GLM: [`df_REDcap_demographics_predictor.rds`](df_REDcap_demographics_predictor.rds) (Contains z-scaled sociodemographic predictors with variables and observations excluded based on small sample sizes.)
+  - Elastic Net Regression: [`df_REDcap_demographics_ElaNet.rds`](df_REDcap_demographics_ElaNet.rds) (Contains cleaned but non–z-scaled sociodemographic predictors without exclusion.)
+
 
 ## Reproducibility
 
