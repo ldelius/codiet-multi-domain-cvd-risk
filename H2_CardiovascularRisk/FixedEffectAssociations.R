@@ -7,6 +7,7 @@ library(tidyverse)
 library(broom)
 library(patchwork)
 library(flextable)
+library(DHARMa)
 
 set.seed(42)
 
@@ -544,6 +545,220 @@ save_as_docx(
   path = "supplementary_tables_GLM_all.docx",
   pr_section = prop_section(page_size = page_size(orient = "landscape"))
 )
+
+##################################################################################
+# GLM Evaluation by devaince stas and DHARMa
+##################################################################################
+# ═══════════════════════════════════════════════════════════════════════════
+# MODEL DIAGNOSTICS: Deviance and DHARMa Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ─── 1. Deviance Statistics ──────────────────────────────────────────────────
+# Function to calculate deviance statistics
+calc_deviance_stats <- function(model, predictor, outcome, n) {
+  tibble(
+    predictor = predictor,
+    outcome = outcome,
+    n = n,
+    deviance = model$deviance,
+    df_residual = model$df.residual,
+    deviance_ratio = model$deviance / model$df.residual,
+    AIC = AIC(model)
+  )
+}
+
+# Run for all predictor sets
+deviance_all <- bind_rows(
+  map_dfr(lipid_predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- df_cvd_and_lipidomics %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (nrow(df_pair) == 0) return(tibble())
+      
+      # Check each fixed effect has at least 2 levels
+      for (fe in fixed_effects) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>% mutate(predictor_set = "Lipids"),
+  
+  map_dfr(fatty_acid_predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- df_cvd_and_fatty_acids %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (nrow(df_pair) == 0) return(tibble())
+      
+      # Check each fixed effect has at least 2 levels
+      for (fe in fixed_effects) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>% mutate(predictor_set = "Fatty acids"),
+  
+  map_dfr(risk_factor_predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- df_cvd_and_risk_factors %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (nrow(df_pair) == 0) return(tibble())
+      
+      # Check each fixed effect has at least 2 levels
+      for (fe in fixed_effects) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>% mutate(predictor_set = "Risk factors"),
+  
+  map_dfr(body_comp_predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- df_cvd_and_body_comp %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (nrow(df_pair) == 0) return(tibble())
+      
+      for (fe in fixed_effects) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>% mutate(predictor_set = "Body composition"),
+  
+  map_dfr(urine_nmr_predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- df_cvd_and_urine_nmr %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (nrow(df_pair) == 0) return(tibble())
+      
+      for (fe in fixed_effects) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>% mutate(predictor_set = "Urine NMR"),
+  
+  map_dfr(REDcap_numeric_preds, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- df_cvd_and_REDcap %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (nrow(df_pair) == 0) return(tibble())
+      
+      for (fe in fixed_effects) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>% mutate(predictor_set = "REDCap numeric")
+)
+
+# Summary by outcome
+deviance_summary <- deviance_all %>%
+  group_by(outcome) %>%
+  summarise(
+    n_models = n(),
+    mean_dev_ratio = mean(deviance_ratio),
+    median_dev_ratio = median(deviance_ratio),
+    sd_dev_ratio = sd(deviance_ratio)
+  ) %>%
+  arrange(desc(mean_dev_ratio))
+
+print("Deviance Summary by Outcome:")
+print(deviance_summary)
+
+# ─── 2. DHARMa Diagnostics ───────────────────────────────────────────────────
+
+# Test one model per outcome (using first risk factor predictor)
+test_dharma_per_outcome <- function() {
+  pred_name <- risk_factor_predictors[1]  # z_AGE.reader
+  
+  map_dfr(outcomes, function(outcome) {
+    df_pair <- df_cvd_and_risk_factors %>%
+      select(all_of(c(outcome, pred_name)), Statins, Supplements, Gender, Country) %>%
+      drop_na()
+    
+    model <- glm(
+      as.formula(paste(outcome, "~", pred_name, "+ Statins + Supplements + Gender + Country")),
+      data = df_pair, 
+      family = Gamma(link = "log")
+    )
+    
+    # DHARMa tests
+    sim_resid <- simulateResiduals(model, n = 1000, plot = FALSE)
+    
+    tibble(
+      outcome = outcome,
+      predictor = pred_name,
+      n = nrow(df_pair),
+      uniformity_p = testUniformity(sim_resid, plot = FALSE)$p.value,
+      dispersion_p = testDispersion(sim_resid, plot = FALSE)$p.value,
+      dispersion_stat = testDispersion(sim_resid, plot = FALSE)$statistic,
+      outlier_p = testOutliers(sim_resid, plot = FALSE)$p.value
+    )
+  })
+}
+
+dharma_results <- test_dharma_per_outcome()
+
+print("DHARMa Diagnostics by Outcome:")
+print(dharma_results)
+
+# ─── 3. Combined Summary Table ───────────────────────────────────────────────
+
+diagnostics_summary <- deviance_summary %>%
+  left_join(
+    dharma_results %>% select(outcome, uniformity_p, dispersion_stat, dispersion_p, outlier_p),
+    by = "outcome"
+  ) %>%
+  mutate(
+    outcome_label = case_when(
+      outcome == "QRISK3_risk" ~ "QRISK3",
+      outcome == "SCORE2_score" ~ "SCORE2",
+      outcome == "ascvd_10y" ~ "ASCVD",
+      outcome == "frs_10y" ~ "Framingham",
+      outcome == "mean_risk" ~ "Composite"
+    )
+  ) %>%
+  select(outcome_label, n_models, median_dev_ratio, 
+         uniformity_p, dispersion_stat, dispersion_p, outlier_p)
+
+print("Combined Model Diagnostics:")
+print(diagnostics_summary)
+
+# Save results
+write_csv(deviance_summary, "deviance_summary.csv")
+write_csv(dharma_results, "dharma_diagnostics.csv")
+write_csv(diagnostics_summary, "combined_diagnostics_summary.csv")
+
 
 
 ##################################################################################
