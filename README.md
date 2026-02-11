@@ -75,6 +75,7 @@ Associations between predictors and CVD scores reported in Chapter 3.2 of the th
 - Data preparation, model fitting, and output generation for the GLM analyses
 - Figure generation for figures presented in Chapter 3.2
 - Produces supplementary tables summarising covariate effects and full GLM results
+- Model Evaluation and respective table
 
 
 ## Reproducibility
