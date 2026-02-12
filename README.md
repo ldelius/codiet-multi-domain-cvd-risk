@@ -71,11 +71,13 @@ Two analysis-ready datasets were generated for different modelling frameworks:
 #### Chapter 3.2 – GLM Analysis
 
 Associations between predictors and CVD scores reported in Chapter 3.2 of the thesis were analysed using generalised linear models.
-[`FixedEffectAssociations.R`](FixedEffectAssociations.R) stores
+[`FixedEffectAssociations.R`](FixedEffectAssociations.R) includes:
 - Data preparation, model fitting, and output generation for the GLM analyses
 - Figure generation for figures presented in Chapter 3.2
 - Produces supplementary tables summarising covariate effects and full GLM results
 - Model Evaluation and respective table
+
+The same analysis, additionally adjusting for Age as a fixed effect, was conducted in: [`FixedEffectAge.R`](FixedEffectAge.R).
 
 
 ## Reproducibility
