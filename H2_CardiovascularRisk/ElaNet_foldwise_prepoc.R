@@ -64,18 +64,22 @@ df_lipidomics_ElaNet <- readRDS("df_lipidomics_predictor_statin_suppl.rds") %>%
 df_urine_nmr_ElaNet <- readRDS("df_urine_NMR_data.rds") %>%
   select(-starts_with("z_"))
 
+df_risk_factors_ElaNet <- readRDS("df_risk_factor_predictors.rds") 
+
 df_body_composition_ElaNet <- readRDS("df_body_composition_metrics.rds") %>%
   select(-starts_with("z_"), -QRISK3_risk) %>%
+  full_join(df_risk_factors_ElaNet %>% select(Body.fat, Fat.free.mass, Sample_ID), by = "Sample_ID") %>%
   filter(!is.na(Sample_ID))
 
 df_REDcap_demographics_ElaNet <- readRDS("df_REDcap_demographics_ElaNet.rds") %>%
   select(-starts_with("z_"), -QRISK3_risk, -recruitment_site)
 
-df_risk_factors_ElaNet <- readRDS("df_risk_factor_predictors.rds") %>%
+df_risk_factors_ElaNet <- df_risk_factors_ElaNet %>%
   select(-starts_with("z_"), -QRISK3_risk,
          -Heart.Rate, -Age, -Total.Cholesterol.mg.dl, -HDL.mg.dl,
          -Body.Weight, -Height, -BMI, -Gender,
-         -stress_resilience_status, -stress_index_status, -Age.Risk)
+         -stress_resilience_status, -stress_index_status, -Age.Risk,
+         -Body.fat, -Fat.free.mass) # belongs to body composition
 
 df_all_cvd_risk_scores_ElaNet <- readRDS("df_all_risk_scores.rds") %>%
   rename(Sample_ID = PatientID) %>%
@@ -87,7 +91,7 @@ df_ascvd_frs_score2_input <- readRDS("ASCVD_SCORE2_Framingham_input.rds") %>%
 df_QRISK3_input <- readRDS("QRISK3_calculation_input.rds") %>%
   rename(Sample_ID = PatientID)
 
-CVD_scores <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y", "mean_risk")
+CVD_scores <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
 
 # ============================================
 # 2. CREATE DATASETS
@@ -678,106 +682,15 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
 # 7. MODEL RUNNER FUNCTIONS
 # ============================================
 
-run_score_specific_models <- function(score_specific_datasets,
-                                      alpha_grid = seq(0, 1, by = 0.1),
-                                      nfolds = 10, 
-                                      n_permutations = 100,
-                                      seed = 42,
-                                      output_file = "elastic_net_score_specific.qs2") {
-  results_list <- list()
-  n_models <- length(score_specific_datasets)
-  
-  cat("==========================================================\n")
-  cat("ELASTIC NET: SCORE-SPECIFIC DATASETS\n")
-  cat(sprintf("Total models: %d | Permutations: %d\n", n_models, n_permutations))
-  cat("==========================================================\n")
-  
-  for (i in seq_along(score_specific_datasets)) {
-    cvd_score <- names(score_specific_datasets)[i]
-    df <- score_specific_datasets[[i]]
-    dataset_name <- paste0(cvd_score, "_specific")
-    
-    cat(sprintf("\n[%d/%d] %s ~ %s\n", i, n_models, cvd_score, dataset_name))
-    
-    tryCatch({
-      results_list[[i]] <- run_elastic_net_model(
-        df_raw = df,
-        outcome_col = cvd_score,
-        cvd_score_name = cvd_score,
-        dataset_name = dataset_name,
-        alpha_grid = alpha_grid,
-        nfolds = nfolds,
-        n_permutations = n_permutations,
-        seed = seed
-      )
-      cat("  ✓ Success\n")
-    }, error = function(e) {
-      cat(sprintf("  ✗ ERROR: %s\n", e$message))
-      results_list[[i]] <- NULL
-    })
-  }
-  
-  results_df <- bind_rows(results_list)
-  qs_save(results_df, file = save_output(output_file))
-  cat(sprintf("\n✓ Saved %d models to %s\n", nrow(results_df), output_file))
-  results_df
-}
+# ============================================
+# MODEL RUNNER FUNCTIONS WITH INCREMENTAL SAVING
+# ============================================
+# Each model is saved immediately after completion
+# Progress is never lost even if interrupted
+# ============================================
 
-
-run_common_datasets_models <- function(datasets_list, cvd_score_names,
-                                       alpha_grid = seq(0, 1, by = 0.1),
-                                       nfolds = 10, 
-                                       n_permutations = 100,
-                                       seed = 42,
-                                       output_file = "elastic_net_common.qs2") {
-  results_list <- list()
-  counter <- 1
-  n_models <- length(datasets_list) * length(cvd_score_names)
-  
-  cat("==========================================================\n")
-  cat("ELASTIC NET: COMMON DATASETS × CVD SCORES\n")
-  cat(sprintf("Total models: %d | Permutations: %d\n", n_models, n_permutations))
-  cat("==========================================================\n")
-  
-  for (dataset_name in names(datasets_list)) {
-    df <- datasets_list[[dataset_name]]
-    
-    for (cvd_score in cvd_score_names) {
-      cat(sprintf("\n[%d/%d] %s ~ %s\n", counter, n_models, cvd_score, dataset_name))
-      
-      if (!cvd_score %in% colnames(df)) {
-        cat(sprintf("  ✗ Column '%s' not found\n", cvd_score))
-        counter <- counter + 1
-        next
-      }
-      
-      tryCatch({
-        results_list[[counter]] <- run_elastic_net_model(
-          df_raw = df,
-          outcome_col = cvd_score,
-          cvd_score_name = cvd_score,
-          dataset_name = dataset_name,
-          alpha_grid = alpha_grid,
-          nfolds = nfolds,
-          n_permutations = n_permutations,
-          seed = seed
-        )
-        cat("  ✓ Success\n")
-      }, error = function(e) {
-        cat(sprintf("  ✗ ERROR: %s\n", e$message))
-        results_list[[counter]] <- NULL
-      })
-      counter <- counter + 1
-    }
-  }
-  
-  results_df <- bind_rows(results_list)
-  qs_save(results_df, file = save_output(output_file))
-  cat(sprintf("\n✓ Saved %d models to %s\n", nrow(results_df), output_file))
-  results_df
-}
-
-
+#' Run score-specific + blocks models WITH INCREMENTAL SAVING
+#' @description Saves results after EACH model completes
 run_score_specific_plus_blocks_models <- function(score_specific_datasets, datasets_list,
                                                   alpha_grid = seq(0, 1, by = 0.1),
                                                   nfolds = 10, 
@@ -788,9 +701,14 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
   counter <- 1
   n_models <- length(score_specific_datasets) * length(datasets_list)
   
+  # Create incremental save directory
+  incremental_dir <- save_output("incremental_saves")
+  dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
+  
   cat("==========================================================\n")
   cat("ELASTIC NET: SCORE-SPECIFIC + PREDICTOR BLOCK\n")
   cat(sprintf("Total models: %d | Permutations: %d\n", n_models, n_permutations))
+  cat(sprintf("Incremental saves to: %s/\n", incremental_dir))
   cat("==========================================================\n")
   
   for (cvd_score in names(score_specific_datasets)) {
@@ -799,6 +717,17 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
       
       cat(sprintf("\n[%d/%d] %s ~ %s\n", counter, n_models, cvd_score, dataset_name))
       
+      # Check if this model was already saved incrementally (resume capability)
+      incremental_file <- file.path(incremental_dir, 
+                                    sprintf("model_%03d_%s_%s.rds", counter, cvd_score, block_name))
+      
+      if (file.exists(incremental_file)) {
+        cat("  ↪ Loading from incremental save (already completed)\n")
+        results_list[[counter]] <- readRDS(incremental_file)
+        counter <- counter + 1
+        next
+      }
+      
       df_combined <- build_score_plus_block(
         score = cvd_score, block_name = block_name,
         score_specific_datasets = score_specific_datasets,
@@ -806,7 +735,7 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
       )
       
       tryCatch({
-        results_list[[counter]] <- run_elastic_net_model(
+        result <- run_elastic_net_model(
           df_raw = df_combined,
           outcome_col = cvd_score,
           cvd_score_name = cvd_score,
@@ -816,7 +745,158 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
           n_permutations = n_permutations,
           seed = seed
         )
-        cat("  ✓ Success\n")
+        
+        results_list[[counter]] <- result
+        
+        # INCREMENTAL SAVE - immediately after each model
+        saveRDS(result, incremental_file)
+        cat(sprintf("  ✓ Success - saved to %s\n", basename(incremental_file)))
+        
+      }, error = function(e) {
+        cat(sprintf("  ✗ ERROR: %s\n", e$message))
+        results_list[[counter]] <- NULL
+      })
+      counter <- counter + 1
+    }
+  }
+  
+  # Combine all results
+  results_df <- bind_rows(results_list)
+  
+  # Save final combined file
+  qs_save(results_df, file = save_output(output_file))
+  cat(sprintf("\n✓ Saved %d models to %s\n", nrow(results_df), output_file))
+  
+  # Also save as RDS backup
+  saveRDS(results_df, file = save_output(gsub("\\.qs2$", ".rds", output_file)))
+  cat(sprintf("✓ Backup saved as %s\n", gsub("\\.qs2$", ".rds", output_file)))
+  
+  results_df
+}
+
+
+#' Run score-specific models WITH INCREMENTAL SAVING
+run_score_specific_models <- function(score_specific_datasets,
+                                      alpha_grid = seq(0, 1, by = 0.1),
+                                      nfolds = 10, 
+                                      n_permutations = 100,
+                                      seed = 42,
+                                      output_file = "elastic_net_score_specific.qs2") {
+  results_list <- list()
+  n_models <- length(score_specific_datasets)
+  
+  incremental_dir <- save_output("incremental_saves_specific")
+  dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  cat("==========================================================\n")
+  cat("ELASTIC NET: SCORE-SPECIFIC DATASETS\n")
+  cat(sprintf("Total models: %d | Permutations: %d\n", n_models, n_permutations))
+  cat(sprintf("Incremental saves to: %s/\n", incremental_dir))
+  cat("==========================================================\n")
+  
+  for (i in seq_along(score_specific_datasets)) {
+    cvd_score <- names(score_specific_datasets)[i]
+    df <- score_specific_datasets[[i]]
+    dataset_name <- paste0(cvd_score, "_specific")
+    
+    cat(sprintf("\n[%d/%d] %s ~ %s\n", i, n_models, cvd_score, dataset_name))
+    
+    incremental_file <- file.path(incremental_dir, sprintf("model_%02d_%s.rds", i, cvd_score))
+    
+    if (file.exists(incremental_file)) {
+      cat("  ↪ Loading from incremental save (already completed)\n")
+      results_list[[i]] <- readRDS(incremental_file)
+      next
+    }
+    
+    tryCatch({
+      result <- run_elastic_net_model(
+        df_raw = df,
+        outcome_col = cvd_score,
+        cvd_score_name = cvd_score,
+        dataset_name = dataset_name,
+        alpha_grid = alpha_grid,
+        nfolds = nfolds,
+        n_permutations = n_permutations,
+        seed = seed
+      )
+      
+      results_list[[i]] <- result
+      saveRDS(result, incremental_file)
+      cat(sprintf("  ✓ Success - saved to %s\n", basename(incremental_file)))
+      
+    }, error = function(e) {
+      cat(sprintf("  ✗ ERROR: %s\n", e$message))
+      results_list[[i]] <- NULL
+    })
+  }
+  
+  results_df <- bind_rows(results_list)
+  qs_save(results_df, file = save_output(output_file))
+  saveRDS(results_df, file = save_output(gsub("\\.qs2$", ".rds", output_file)))
+  cat(sprintf("\n✓ Saved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
+  results_df
+}
+
+
+#' Run common datasets models WITH INCREMENTAL SAVING
+run_common_datasets_models <- function(datasets_list, cvd_score_names,
+                                       alpha_grid = seq(0, 1, by = 0.1),
+                                       nfolds = 10, 
+                                       n_permutations = 100,
+                                       seed = 42,
+                                       output_file = "elastic_net_common.qs2") {
+  results_list <- list()
+  counter <- 1
+  n_models <- length(datasets_list) * length(cvd_score_names)
+  
+  incremental_dir <- save_output("incremental_saves_common")
+  dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  cat("==========================================================\n")
+  cat("ELASTIC NET: COMMON DATASETS × CVD SCORES\n")
+  cat(sprintf("Total models: %d | Permutations: %d\n", n_models, n_permutations))
+  cat(sprintf("Incremental saves to: %s/\n", incremental_dir))
+  cat("==========================================================\n")
+  
+  for (dataset_name in names(datasets_list)) {
+    df <- datasets_list[[dataset_name]]
+    
+    for (cvd_score in cvd_score_names) {
+      cat(sprintf("\n[%d/%d] %s ~ %s\n", counter, n_models, cvd_score, dataset_name))
+      
+      incremental_file <- file.path(incremental_dir, 
+                                    sprintf("model_%03d_%s_%s.rds", counter, cvd_score, dataset_name))
+      
+      if (file.exists(incremental_file)) {
+        cat("  ↪ Loading from incremental save (already completed)\n")
+        results_list[[counter]] <- readRDS(incremental_file)
+        counter <- counter + 1
+        next
+      }
+      
+      if (!cvd_score %in% colnames(df)) {
+        cat(sprintf("  ✗ Column '%s' not found\n", cvd_score))
+        counter <- counter + 1
+        next
+      }
+      
+      tryCatch({
+        result <- run_elastic_net_model(
+          df_raw = df,
+          outcome_col = cvd_score,
+          cvd_score_name = cvd_score,
+          dataset_name = dataset_name,
+          alpha_grid = alpha_grid,
+          nfolds = nfolds,
+          n_permutations = n_permutations,
+          seed = seed
+        )
+        
+        results_list[[counter]] <- result
+        saveRDS(result, incremental_file)
+        cat(sprintf("  ✓ Success - saved to %s\n", basename(incremental_file)))
+        
       }, error = function(e) {
         cat(sprintf("  ✗ ERROR: %s\n", e$message))
         results_list[[counter]] <- NULL
@@ -827,8 +907,139 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
   
   results_df <- bind_rows(results_list)
   qs_save(results_df, file = save_output(output_file))
-  cat(sprintf("\n✓ Saved %d models to %s\n", nrow(results_df), output_file))
+  saveRDS(results_df, file = save_output(gsub("\\.qs2$", ".rds", output_file)))
+  cat(sprintf("\n✓ Saved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
   results_df
+}
+
+
+#' Run permutation importance WITH INCREMENTAL SAVING
+run_permutation_importance_batch <- function(results_df, 
+                                             datasets_list,
+                                             score_specific_datasets,
+                                             n_permutations = 100,
+                                             nfolds = 5,
+                                             n_cores = 1,
+                                             seed = 42,
+                                             models_to_run = NULL) {
+  
+  if (is.null(models_to_run)) {
+    models_to_run <- results_df %>%
+      select(cvd_score, dataset_name) %>%
+      distinct()
+  }
+  
+  n_models <- nrow(models_to_run)
+  
+  incremental_dir <- save_output("incremental_saves_importance")
+  dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  cat("==========================================================\n")
+  cat("PERMUTATION FEATURE IMPORTANCE (PARALLELIZED + INCREMENTAL SAVE)\n")
+  cat(sprintf("Models: %d | Permutations/feature/fold: %d | Folds: %d | Cores: %d\n", 
+              n_models, n_permutations, nfolds, n_cores))
+  cat(sprintf("Incremental saves to: %s/\n", incremental_dir))
+  cat("==========================================================\n")
+  
+  all_results <- list()
+  
+  for (i in 1:n_models) {
+    cvd_score <- models_to_run$cvd_score[i]
+    dataset_name <- models_to_run$dataset_name[i]
+    
+    cat(sprintf("\n[%d/%d] %s ~ %s\n", i, n_models, cvd_score, dataset_name))
+    
+    # Check for existing incremental save
+    safe_dataset_name <- gsub("[^A-Za-z0-9_]", "_", dataset_name)
+    incremental_file <- file.path(incremental_dir, 
+                                  sprintf("importance_%03d_%s_%s.rds", i, cvd_score, safe_dataset_name))
+    
+    if (file.exists(incremental_file)) {
+      cat("  ↪ Loading from incremental save (already completed)\n")
+      all_results[[i]] <- readRDS(incremental_file)
+      next
+    }
+    
+    model_results <- results_df %>%
+      filter(cvd_score == !!cvd_score, dataset_name == !!dataset_name)
+    
+    if (nrow(model_results) == 0) {
+      cat("  ✗ No elastic net results found\n")
+      next
+    }
+    
+    features_to_test <- get_nonzero_features(model_results[1, ])
+    n_nonzero <- length(features_to_test)
+    
+    cat(sprintf("  Non-zero coefficient features: %d\n", n_nonzero))
+    
+    if (n_nonzero == 0) {
+      cat("  ✗ No features with non-zero coefficients (null model)\n")
+      next
+    }
+    
+    df_raw <- build_model_dataset(cvd_score, dataset_name, 
+                                  score_specific_datasets, datasets_list)
+    
+    if (is.null(df_raw)) {
+      cat("  ✗ Could not build dataset\n")
+      next
+    }
+    
+    model_start <- Sys.time()
+    
+    tryCatch({
+      importance_results <- run_permutation_importance(
+        df_raw = df_raw,
+        outcome_col = cvd_score,
+        exclude_cols = "Sample_ID",
+        features_to_test = features_to_test,
+        alpha_grid = seq(0, 1, by = 0.1),
+        nfolds = nfolds,
+        n_permutations = n_permutations,
+        n_cores = n_cores,
+        seed = seed + i * 100000
+      )
+      
+      model_elapsed <- difftime(Sys.time(), model_start, units = "mins")
+      
+      if (!is.null(importance_results)) {
+        importance_results$aggregated$cvd_score <- cvd_score
+        importance_results$aggregated$dataset_name <- dataset_name
+        importance_results$aggregated$n_observations <- importance_results$n_observations
+        importance_results$aggregated$n_permutations <- importance_results$n_permutations
+        importance_results$aggregated$n_folds_cv <- importance_results$n_folds_cv
+        
+        all_results[[i]] <- importance_results
+        
+        # INCREMENTAL SAVE
+        saveRDS(importance_results, incremental_file)
+        
+        n_sig <- sum(importance_results$aggregated$significant_005, na.rm = TRUE)
+        top_feat <- importance_results$aggregated$feature[1]
+        top_imp <- importance_results$aggregated$importance[1]
+        
+        cat(sprintf("  ✓ Complete in %.1f min: %d significant (q < 0.05), top = %s (Δ MSE = %.4f)\n",
+                    as.numeric(model_elapsed), n_sig, top_feat, top_imp))
+        cat(sprintf("  ✓ Saved to %s\n", basename(incremental_file)))
+      } else {
+        cat("  ✗ No results returned\n")
+      }
+    }, error = function(e) {
+      cat(sprintf("  ✗ ERROR: %s\n", e$message))
+    })
+  }
+  
+  aggregated_all <- bind_rows(lapply(all_results, function(x) {
+    if (!is.null(x)) x$aggregated else NULL
+  }))
+  
+  cat(sprintf("\n✓ Completed %d models\n", length(all_results[!sapply(all_results, is.null)])))
+  
+  list(
+    all_results = all_results,
+    aggregated = aggregated_all
+  )
 }
 
 # ============================================
@@ -869,7 +1080,7 @@ results_score_specific <- run_score_specific_models(
   score_specific_datasets = score_specific_datasets,
   alpha_grid = seq(0, 1, by = 0.1),
   nfolds = 5, 
-  n_permutations = 1000,
+  n_permutations = 0,
   seed = 42,
   output_file = "elastic_net_score_specific_5fold.qs2"
 )
@@ -879,7 +1090,7 @@ results_common <- run_common_datasets_models(
   cvd_score_names = CVD_scores,
   alpha_grid = seq(0, 1, by = 0.1),
   nfolds = 5, 
-  n_permutations = 1000,
+  n_permutations = 0,
   seed = 42,
   output_file = "elastic_net_common_5fold.qs2"
 )
@@ -889,7 +1100,7 @@ results_score_plus_blocks <- run_score_specific_plus_blocks_models(
   datasets_list = datasets_list,
   alpha_grid = seq(0, 1, by = 0.1),
   nfolds = 5, 
-  n_permutations = 1000,
+  n_permutations = 0,
   seed = 42,
   output_file = "elastic_net_score_plus_blocks_5fold.qs2"
 )
@@ -913,7 +1124,7 @@ for (i in seq_along(scores_without_ht_wt)) {
       dataset_name = "body_comp_with_ht_wt",
       alpha_grid = seq(0, 1, by = 0.1),
       nfolds = 5,
-      n_permutations = 1000,
+      n_permutations = 0,
       seed = 42
     )
     cat("  ✓ Success\n")
@@ -950,7 +1161,7 @@ for (i in seq_along(scores_without_ht_wt)) {
       dataset_name = dataset_name,
       alpha_grid = seq(0, 1, by = 0.1),
       nfolds = 5,
-      n_permutations = 1000,
+      n_permutations = 0,
       seed = 42
     )
     cat("  ✓ Success\n")
@@ -1229,8 +1440,7 @@ plot_block_coefficients <- function(coef_data, block_name) {
                                "ascvd_10y" = "ASCVD",
                                "frs_10y" = "Framingham",
                                "QRISK3_risk" = "QRISK3",
-                               "SCORE2_score" = "SCORE2",
-                               "mean_risk" = "Composite"
+                               "SCORE2_score" = "SCORE2"
       )
     )
   
@@ -1355,14 +1565,13 @@ create_block_plots(
 # 12. TABLE CREATION FUNCTIONS
 # ============================================
 
-cvd_score_order <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y", "mean_risk")
+cvd_score_order <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
 
 cvd_score_labels <- c(
   "QRISK3_risk" = "QRISK3",
   "SCORE2_score" = "SCORE2", 
   "frs_10y" = "Framingham",
-  "ascvd_10y" = "ASCVD",
-  "mean_risk" = "Composite"
+  "ascvd_10y" = "ASCVD"
 )
 
 dataset_labels_table <- c(
@@ -1638,8 +1847,7 @@ cvd_colors <- c(
   "QRISK3" = "#E69F00",
   "SCORE2" = "#56B4E9",
   "Framingham" = "#009E73",
-  "ASCVD" = "#F0E442",
-  "Composite" = "#D55E00"
+  "ASCVD" = "#F0E442"
 )
 
 # Prepare data for left column
@@ -1817,6 +2025,11 @@ qs_save(results_all, save_output("elastic_net_all_results.qs2"))
 cat("\n==========================================================\n")
 cat(sprintf("ALL OUTPUT FILES SAVED TO: %s\n", OUTPUT_DIR))
 cat("==========================================================\n")
+
+
+###############################################################################
+###############################################################################
+###############################################################################
 
 # ============================================
 # 15. PERMUTATION FEATURE IMPORTANCE (PARALLELIZED)
@@ -2712,3 +2925,1470 @@ cat("✓ PERMUTATION IMPORTANCE ANALYSIS COMPLETE\n")
 cat(sprintf("  Results saved to: %s\n", OUTPUT_DIR))
 cat(sprintf("  Total runtime: %.2f hours\n", as.numeric(total_runtime)))
 cat("==========================================================\n")
+
+
+
+
+
+
+#' ########################################################################
+#' Create a combined importance table for one dataset across all CVD scores
+#' ########################################################################
+#' 
+#' Works for both score+block and common (block only) results
+create_dataset_importance_table <- function(importance_df, 
+                                            coefficient_df,
+                                            dataset_pattern,
+                                            min_importance = 0,
+                                            result_type = "score_plus_block") {
+  
+  # Filter based on result type
+  
+  if (result_type == "score_plus_block") {
+    # Match score+block format: *_specific+block
+    data_filtered <- importance_df %>%
+      filter(grepl(paste0("_specific\\+", dataset_pattern, "$"), dataset_name))
+  } else {
+    # Match common format: exact block name
+    data_filtered <- importance_df %>%
+      filter(dataset_name == dataset_pattern)
+  }
+  
+  if (nrow(data_filtered) == 0) {
+    warning(sprintf("No data found for pattern: %s", dataset_pattern))
+    return(NULL)
+  }
+  
+  # Join with coefficient directions
+  data_joined <- data_filtered %>%
+    left_join(
+      coefficient_df %>% 
+        select(cvd_score, dataset_name, feature, coefficient, direction),
+      by = c("cvd_score", "dataset_name", "feature")
+    )
+  
+  # Filter to positive importance only
+  data_positive <- data_joined %>%
+    filter(importance > min_importance)
+  
+  if (nrow(data_positive) == 0) {
+    warning(sprintf("No features with importance > %s for: %s", min_importance, dataset_pattern))
+    return(NULL)
+  }
+  
+  # Create cell content: asterisks if significant, empty string if not
+  data_positive <- data_positive %>%
+    mutate(
+      sig_stars = case_when(
+        p_value_bh < 0.001 ~ "***",
+        p_value_bh < 0.01 ~ "**",
+        p_value_bh < 0.05 ~ "*",
+        TRUE ~ ""
+      ),
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3",
+                         "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham",
+                         "ascvd_10y" = "ASCVD",
+                         "mean_risk" = "Composite"
+      )
+    )
+  
+  # Calculate average importance for sorting
+  feature_order <- data_positive %>%
+    group_by(feature) %>%
+    summarise(
+      avg_importance = mean(importance, na.rm = TRUE),
+      n_scores = n(),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(avg_importance))
+  
+  # Define score order
+  score_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD", "Composite")
+  
+  # Pivot cell values (asterisks) to wide format
+  values_wide <- data_positive %>%
+    select(feature, cvd_label, sig_stars) %>%
+    pivot_wider(
+      names_from = cvd_label,
+      values_from = sig_stars,
+      values_fill = NA_character_
+    )
+  
+  # Pivot directions to wide format
+  directions_wide <- data_positive %>%
+    select(feature, cvd_label, direction) %>%
+    pivot_wider(
+      names_from = cvd_label,
+      values_from = direction,
+      values_fill = NA_character_
+    )
+  
+  # Join with feature order and sort
+  table_final <- feature_order %>%
+    select(feature, avg_importance) %>%
+    left_join(values_wide, by = "feature") %>%
+    arrange(desc(avg_importance))
+  
+  directions_final <- feature_order %>%
+    select(feature) %>%
+    left_join(directions_wide, by = "feature")
+  
+  # Reorder columns
+  score_cols_present <- intersect(score_order, names(table_final))
+  table_final <- table_final %>%
+    select(feature, all_of(score_cols_present))
+  
+  directions_final <- directions_final %>%
+    select(feature, any_of(score_cols_present))
+  
+  list(
+    table = table_final,
+    directions = directions_final,
+    n_features = nrow(table_final),
+    dataset = dataset_pattern,
+    score_cols = score_cols_present
+  )
+}
+
+
+#' Create and save all dataset tables (updated to handle both types)
+create_all_importance_tables <- function(importance_results,
+                                         coefficient_directions,
+                                         datasets = c("all_data", "lipids", "fatty_acids", 
+                                                      "urine_nmr", "body_composition", 
+                                                      "clinical_risk_factors", 
+                                                      "sociodemographics_lifestyle"),
+                                         output_dir = "importance_tables",
+                                         result_type = "score_plus_block",
+                                         dataset_labels = NULL) {
+  
+  full_output_dir <- save_output(output_dir)
+  dir.create(full_output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  importance_df <- importance_results$aggregated
+  
+  # Default labels
+  if (is.null(dataset_labels)) {
+    dataset_labels <- c(
+      "all_data" = "All Predictors",
+      "lipids" = "Lipids",
+      "fatty_acids" = "Fatty Acids",
+      "urine_nmr" = "Urine NMR Metabolites",
+      "body_composition" = "Body Composition",
+      "clinical_risk_factors" = "Clinical Risk Factors",
+      "sociodemographics_lifestyle" = "Sociodemographics & Lifestyle"
+    )
+  }
+  
+  type_label <- if (result_type == "score_plus_block") "Score-Specific + " else ""
+  
+  cat(sprintf("\nCreating importance tables for %d datasets (%s)...\n", 
+              length(datasets), 
+              if (result_type == "score_plus_block") "score+block" else "blocks only"))
+  
+  all_tables <- list()
+  
+  for (ds in datasets) {
+    cat(sprintf("  %s: ", ds))
+    
+    table_data <- create_dataset_importance_table(
+      importance_df = importance_df,
+      coefficient_df = coefficient_directions,
+      dataset_pattern = ds,
+      min_importance = 0,
+      result_type = result_type
+    )
+    
+    if (is.null(table_data)) {
+      cat("No data\n")
+      next
+    }
+    
+    cat(sprintf("%d features\n", table_data$n_features))
+    
+    # Get nice title
+    title_text <- paste0("Permutation Feature Importance: ", type_label,
+                         ifelse(ds %in% names(dataset_labels), dataset_labels[ds], ds))
+    
+    # Render flextable
+    ft <- render_importance_flextable(table_data, title = title_text)
+    
+    # Save as Word document
+    docx_file <- file.path(full_output_dir, paste0("importance_table_", ds, ".docx"))
+    save_as_docx(ft, path = docx_file)
+    
+    # Save as HTML
+    html_file <- file.path(full_output_dir, paste0("importance_table_", ds, ".html"))
+    save_as_html(ft, path = html_file)
+    
+    all_tables[[ds]] <- list(data = table_data, flextable = ft)
+  }
+  
+  # Create combined Word document with all tables
+  cat("\nCreating combined document...\n")
+  
+  combined_doc <- read_docx()
+  combined_doc <- body_add_par(combined_doc, "Permutation Feature Importance Tables", style = "heading 1")
+  combined_doc <- body_add_par(combined_doc, 
+                               if (result_type == "score_plus_block") 
+                                 "Score-Specific + Predictor Blocks" 
+                               else 
+                                 "Predictor Blocks Only", 
+                               style = "heading 2")
+  combined_doc <- body_add_par(combined_doc, "")
+  
+  for (ds in names(all_tables)) {
+    title_text <- ifelse(ds %in% names(dataset_labels), dataset_labels[ds], ds)
+    combined_doc <- body_add_par(combined_doc, title_text, style = "heading 3")
+    combined_doc <- body_add_flextable(combined_doc, value = all_tables[[ds]]$flextable)
+    combined_doc <- body_add_break(combined_doc)
+  }
+  
+  print(combined_doc, target = file.path(full_output_dir, "All_Importance_Tables_Combined.docx"))
+  
+  cat(sprintf("\n✓ Tables saved to %s/\n", output_dir))
+  cat("  - Individual tables as .docx and .html\n")
+  cat("  - Combined document: All_Importance_Tables_Combined.docx\n")
+  
+  all_tables
+}
+
+
+
+
+
+
+# ============================================
+# RUN TABLE CREATION FOR BOTH TYPES
+# ============================================
+
+# 1. SCORE+BLOCKS tables
+cat("\n=== Creating tables for SCORE+BLOCKS results ===\n")
+
+importance_tables_score_plus_blocks <- create_all_importance_tables(
+  importance_results = importance_results_full,
+  coefficient_directions = coefficient_directions_full,
+  datasets = c("all_data", "lipids", "fatty_acids", "urine_nmr", 
+               "body_composition", "clinical_risk_factors", 
+               "sociodemographics_lifestyle"),
+  output_dir = "importance_tables_score_plus_blocks",
+  result_type = "score_plus_block"
+)
+
+# 2. COMMON (blocks only) tables
+cat("\n=== Creating tables for COMMON (blocks only) results ===\n")
+
+# Extract coefficient directions for common datasets
+coefficient_directions_common <- extract_coefficient_directions(results_common)
+
+importance_tables_common <- create_all_importance_tables(
+  importance_results = importance_results_common,
+  coefficient_directions = coefficient_directions_common,
+  datasets = c("all_data", "lipids", "fatty_acids", "urine_nmr", 
+               "body_composition", "clinical_risk_factors", 
+               "sociodemographics_lifestyle"),
+  output_dir = "importance_tables_common",
+  result_type = "common"
+)
+
+cat("\n✓ All tables created\n")
+
+
+
+
+
+# ============================================
+# CREATE TABLES WITH ONLY SIGNIFICANT FEATURES
+# ============================================
+
+#' Create importance table with ONLY features significant in at least one score
+create_significant_only_table <- function(importance_df, 
+                                          coefficient_df,
+                                          dataset_pattern,
+                                          min_importance = 0,
+                                          result_type = "score_plus_block") {
+  
+  # Filter based on result type
+  if (result_type == "score_plus_block") {
+    data_filtered <- importance_df %>%
+      filter(grepl(paste0("_specific\\+", dataset_pattern, "$"), dataset_name))
+  } else {
+    data_filtered <- importance_df %>%
+      filter(dataset_name == dataset_pattern)
+  }
+  
+  if (nrow(data_filtered) == 0) {
+    warning(sprintf("No data found for pattern: %s", dataset_pattern))
+    return(NULL)
+  }
+  
+  # Join with coefficient directions
+  data_joined <- data_filtered %>%
+    left_join(
+      coefficient_df %>% 
+        select(cvd_score, dataset_name, feature, coefficient, direction),
+      by = c("cvd_score", "dataset_name", "feature")
+    )
+  
+  # Filter to positive importance only
+  data_positive <- data_joined %>%
+    filter(importance > min_importance)
+  
+  if (nrow(data_positive) == 0) {
+    warning(sprintf("No features with importance > %s for: %s", min_importance, dataset_pattern))
+    return(NULL)
+  }
+  
+  # Identify features that are significant in AT LEAST ONE score
+  significant_features <- data_positive %>%
+    filter(p_value_bh < 0.05) %>%
+    pull(feature) %>%
+    unique()
+  
+  if (length(significant_features) == 0) {
+    warning(sprintf("No significant features for: %s", dataset_pattern))
+    return(NULL)
+  }
+  
+  # Keep only those features
+  data_significant <- data_positive %>%
+    filter(feature %in% significant_features)
+  
+  # Create cell content: asterisks if significant, empty string if not
+  data_significant <- data_significant %>%
+    mutate(
+      sig_stars = case_when(
+        p_value_bh < 0.001 ~ "***",
+        p_value_bh < 0.01 ~ "**",
+        p_value_bh < 0.05 ~ "*",
+        TRUE ~ ""
+      ),
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3",
+                         "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham",
+                         "ascvd_10y" = "ASCVD",
+                         "mean_risk" = "Composite"
+      )
+    )
+  
+  # Calculate average importance for sorting (only across significant scores)
+  feature_order <- data_significant %>%
+    group_by(feature) %>%
+    summarise(
+      avg_importance = mean(importance, na.rm = TRUE),
+      n_significant = sum(p_value_bh < 0.05, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(n_significant), desc(avg_importance))
+  
+  # Define score order
+  score_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD", "Composite")
+  
+  # Pivot cell values to wide format
+  values_wide <- data_significant %>%
+    select(feature, cvd_label, sig_stars) %>%
+    pivot_wider(
+      names_from = cvd_label,
+      values_from = sig_stars,
+      values_fill = NA_character_
+    )
+  
+  # Pivot directions to wide format
+  directions_wide <- data_significant %>%
+    select(feature, cvd_label, direction) %>%
+    pivot_wider(
+      names_from = cvd_label,
+      values_from = direction,
+      values_fill = NA_character_
+    )
+  
+  # Join with feature order and sort
+  table_final <- feature_order %>%
+    select(feature, avg_importance, n_significant) %>%
+    left_join(values_wide, by = "feature") %>%
+    arrange(desc(n_significant), desc(avg_importance))
+  
+  directions_final <- feature_order %>%
+    select(feature) %>%
+    left_join(directions_wide, by = "feature")
+  
+  # Reorder columns
+  score_cols_present <- intersect(score_order, names(table_final))
+  table_final <- table_final %>%
+    select(feature, all_of(score_cols_present))
+  
+  directions_final <- directions_final %>%
+    select(feature, any_of(score_cols_present))
+  
+  list(
+    table = table_final,
+    directions = directions_final,
+    n_features = nrow(table_final),
+    n_total_positive = nrow(data_positive %>% distinct(feature)),
+    dataset = dataset_pattern,
+    score_cols = score_cols_present
+  )
+}
+
+
+#' Render significant-only table with flextable
+render_significant_flextable <- function(table_data, title = NULL) {
+  
+  if (is.null(table_data)) return(NULL)
+  
+  tbl <- table_data$table
+  dirs <- table_data$directions
+  score_cols <- table_data$score_cols
+  
+  # Replace NA with empty string for display
+  for (col in score_cols) {
+    tbl[[col]] <- ifelse(is.na(tbl[[col]]), "", tbl[[col]])
+  }
+  
+  # Create flextable
+  ft <- flextable(tbl) %>%
+    set_header_labels(feature = "Feature") %>%
+    align(j = 1, align = "left", part = "all") %>%
+    align(j = score_cols, align = "center", part = "all") %>%
+    bold(part = "header") %>%
+    fontsize(size = 9, part = "body") %>%
+    fontsize(size = 10, part = "header") %>%
+    font(fontname = "Arial", part = "all") %>%
+    width(j = "feature", width = 2.5) %>%
+    width(j = score_cols, width = 1.0) %>%
+    border_remove() %>%
+    hline_top(border = fp_border(width = 2), part = "all") %>%
+    hline_bottom(border = fp_border(width = 2), part = "body") %>%
+    hline(i = 1, border = fp_border(width = 1.5), part = "header") %>%
+    padding(padding = 4, part = "all")
+  
+  # Apply conditional coloring for each cell
+  for (col in score_cols) {
+    for (i in 1:nrow(tbl)) {
+      direction <- dirs[[col]][i]
+      
+      if (!is.na(direction) && direction %in% c("Risk-Increasing", "Risk-Decreasing")) {
+        bg_color <- if (direction == "Risk-Increasing") "#FDDBC7" else "#D1E5F0"
+        text_color <- if (direction == "Risk-Increasing") "#B35806" else "#2166AC"
+        
+        ft <- ft %>%
+          bg(i = i, j = col, bg = bg_color, part = "body") %>%
+          color(i = i, j = col, color = text_color, part = "body") %>%
+          bold(i = i, j = col, part = "body")
+      }
+    }
+  }
+  
+  # Add caption
+  if (!is.null(title)) {
+    ft <- ft %>%
+      set_caption(caption = title)
+  }
+  
+  # Add footnote with counts
+  footnote_text <- sprintf(
+    "Showing %d features significant (q < 0.05) in ≥1 score (of %d with positive importance) | * q < 0.05, ** q < 0.01, *** q < 0.001 | Orange = β > 0, Blue = β < 0 | Empty = not selected or importance ≤ 0",
+    table_data$n_features,
+    table_data$n_total_positive
+  )
+  
+  ft <- ft %>%
+    add_footer_lines(values = footnote_text) %>%
+    fontsize(size = 8, part = "footer") %>%
+    italic(part = "footer")
+  
+  ft
+}
+
+
+#' Create and save significant-only tables for all datasets
+create_significant_tables <- function(importance_results,
+                                      coefficient_directions,
+                                      datasets = c("all_data", "lipids", "fatty_acids", 
+                                                   "urine_nmr", "body_composition", 
+                                                   "clinical_risk_factors", 
+                                                   "sociodemographics_lifestyle"),
+                                      output_dir = "importance_tables_significant",
+                                      result_type = "score_plus_block",
+                                      dataset_labels = NULL) {
+  
+  full_output_dir <- save_output(output_dir)
+  dir.create(full_output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  importance_df <- importance_results$aggregated
+  
+  # Default labels
+  if (is.null(dataset_labels)) {
+    dataset_labels <- c(
+      "all_data" = "All Predictors",
+      "lipids" = "Lipids",
+      "fatty_acids" = "Fatty Acids",
+      "urine_nmr" = "Urine NMR Metabolites",
+      "body_composition" = "Body Composition",
+      "clinical_risk_factors" = "Clinical Risk Factors",
+      "sociodemographics_lifestyle" = "Sociodemographics & Lifestyle"
+    )
+  }
+  
+  type_label <- if (result_type == "score_plus_block") "Score-Specific + " else ""
+  
+  cat(sprintf("\nCreating SIGNIFICANT-ONLY tables for %d datasets (%s)...\n", 
+              length(datasets), 
+              if (result_type == "score_plus_block") "score+block" else "blocks only"))
+  
+  all_tables <- list()
+  
+  for (ds in datasets) {
+    cat(sprintf("  %s: ", ds))
+    
+    table_data <- create_significant_only_table(
+      importance_df = importance_df,
+      coefficient_df = coefficient_directions,
+      dataset_pattern = ds,
+      min_importance = 0,
+      result_type = result_type
+    )
+    
+    if (is.null(table_data)) {
+      cat("No significant features\n")
+      next
+    }
+    
+    cat(sprintf("%d significant features (of %d positive)\n", 
+                table_data$n_features, table_data$n_total_positive))
+    
+    # Get nice title
+    title_text <- paste0("Significant Features: ", type_label,
+                         ifelse(ds %in% names(dataset_labels), dataset_labels[ds], ds))
+    
+    # Render flextable
+    ft <- render_significant_flextable(table_data, title = title_text)
+    
+    # Save as Word document
+    docx_file <- file.path(full_output_dir, paste0("significant_table_", ds, ".docx"))
+    save_as_docx(ft, path = docx_file)
+    
+    # Save as HTML
+    html_file <- file.path(full_output_dir, paste0("significant_table_", ds, ".html"))
+    save_as_html(ft, path = html_file)
+    
+    all_tables[[ds]] <- list(data = table_data, flextable = ft)
+  }
+  
+  # Create combined Word document
+  if (length(all_tables) > 0) {
+    cat("\nCreating combined document...\n")
+    
+    combined_doc <- read_docx()
+    combined_doc <- body_add_par(combined_doc, "Significant Features Only", style = "heading 1")
+    combined_doc <- body_add_par(combined_doc, 
+                                 if (result_type == "score_plus_block") 
+                                   "Score-Specific + Predictor Blocks" 
+                                 else 
+                                   "Predictor Blocks Only", 
+                                 style = "heading 2")
+    combined_doc <- body_add_par(combined_doc, "Features with q < 0.05 in at least one CVD score")
+    combined_doc <- body_add_par(combined_doc, "")
+    
+    for (ds in names(all_tables)) {
+      title_text <- ifelse(ds %in% names(dataset_labels), dataset_labels[ds], ds)
+      combined_doc <- body_add_par(combined_doc, title_text, style = "heading 3")
+      combined_doc <- body_add_flextable(combined_doc, value = all_tables[[ds]]$flextable)
+      combined_doc <- body_add_break(combined_doc)
+    }
+    
+    print(combined_doc, target = file.path(full_output_dir, "Significant_Features_Combined.docx"))
+  }
+  
+  cat(sprintf("\n✓ Tables saved to %s/\n", output_dir))
+  
+  all_tables
+}
+
+
+# ============================================
+# RUN FOR BOTH SCORE+BLOCKS AND COMMON
+# ============================================
+
+# 1. SCORE+BLOCKS - significant only
+cat("\n=== SIGNIFICANT-ONLY tables for SCORE+BLOCKS ===\n")
+
+significant_tables_score_plus_blocks <- create_significant_tables(
+  importance_results = importance_results_full,
+  coefficient_directions = coefficient_directions_full,
+  datasets = c("all_data", "lipids", "fatty_acids", "urine_nmr", 
+               "body_composition", "clinical_risk_factors", 
+               "sociodemographics_lifestyle"),
+  output_dir = "significant_tables_score_plus_blocks",
+  result_type = "score_plus_block"
+)
+
+# 2. COMMON (blocks only) - significant only
+cat("\n=== SIGNIFICANT-ONLY tables for COMMON (blocks only) ===\n")
+
+significant_tables_common <- create_significant_tables(
+  importance_results = importance_results_common,
+  coefficient_directions = coefficient_directions_common,
+  datasets = c("all_data", "lipids", "fatty_acids", "urine_nmr", 
+               "body_composition", "clinical_risk_factors", 
+               "sociodemographics_lifestyle"),
+  output_dir = "significant_tables_common",
+  result_type = "common"
+)
+
+cat("\n✓ All significant-only tables created\n")
+
+
+
+# ============================================
+# CIRCULAR IMPORTANCE PLOT - VERSION 4 (BETTER PROPORTIONS)
+# ============================================
+
+create_circular_importance_plot_v4 <- function(importance_df,
+                                               coefficient_df,
+                                               result_type = "score_plus_block",
+                                               title = "Feature\nImportance",
+                                               output_file = "circular_importance_v4.pdf",
+                                               use_sqrt_scale = TRUE) {
+  
+  # Define block order and labels
+  block_info <- tibble(
+    block = c("body_composition", "clinical_risk_factors", "sociodemographics_lifestyle",
+              "fatty_acids", "urine_nmr", "lipids"),
+    block_label = c("Body Composition", "Clinical Risk Factors", "Sociodemographics",
+                    "Fatty Acids", "Urine NMR", "Lipids")
+  )
+  
+  # CVD score colors
+  cvd_colors <- c(
+    "QRISK3" = "#E69F00",
+    "SCORE2" = "#56B4E9",
+    "Framingham" = "#009E73",
+    "ASCVD" = "#CC79A7",
+    "Composite" = "#D55E00"
+  )
+  
+  cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD", "Composite")
+  
+  # Prepare data
+  if (result_type == "score_plus_block") {
+    plot_data <- importance_df %>%
+      mutate(block = sub("^.*_specific\\+", "", dataset_name))
+  } else {
+    plot_data <- importance_df %>%
+      mutate(block = dataset_name)
+  }
+  
+  # Filter to: relevant blocks, positive importance, SIGNIFICANT ONLY
+  plot_data <- plot_data %>%
+    filter(block %in% block_info$block) %>%
+    filter(importance > 0) %>%
+    filter(p_value_bh < 0.05) %>%
+    left_join(
+      coefficient_df %>% 
+        select(cvd_score, dataset_name, feature, direction),
+      by = c("cvd_score", "dataset_name", "feature")
+    ) %>%
+    mutate(
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3",
+                         "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham",
+                         "ascvd_10y" = "ASCVD",
+                         "mean_risk" = "Composite"
+      ),
+      plot_importance = if (use_sqrt_scale) sqrt(importance) else importance,
+      bar_value = ifelse(direction == "Risk-Increasing", plot_importance, -plot_importance),
+      sig_stars = case_when(
+        p_value_bh < 0.001 ~ "***",
+        p_value_bh < 0.01 ~ "**",
+        p_value_bh < 0.05 ~ "*",
+        TRUE ~ ""
+      )
+    ) %>%
+    filter(!is.na(direction), direction != "Zero")
+  
+  cat(sprintf("Total significant features: %d\n", n_distinct(plot_data$feature)))
+  
+  # Add block labels
+  plot_data <- plot_data %>%
+    left_join(block_info, by = "block") %>%
+    mutate(block = factor(block, levels = block_info$block))
+  
+  # Order features within each block
+  feature_order <- plot_data %>%
+    group_by(block, feature) %>%
+    summarise(avg_imp = mean(importance, na.rm = TRUE), n_scores = n(), .groups = "drop") %>%
+    arrange(block, desc(avg_imp)) %>%
+    group_by(block) %>%
+    mutate(feature_idx = row_number()) %>%
+    ungroup()
+  
+  plot_data <- plot_data %>%
+    left_join(feature_order %>% select(block, feature, feature_idx, n_scores), 
+              by = c("block", "feature"))
+  
+  # Features per block
+  features_per_block <- feature_order %>%
+    group_by(block) %>%
+    summarise(n_features = n(), .groups = "drop") %>%
+    left_join(block_info, by = "block") %>%
+    filter(n_features > 0) %>%
+    arrange(match(block, block_info$block))
+  
+  cat("\nFeatures per block:\n")
+  print(features_per_block)
+  
+  max_plot_val <- max(abs(plot_data$bar_value), na.rm = TRUE) * 1.1
+  
+  # Gridlines
+  if (use_sqrt_scale) {
+    grid_original <- c(0.5, 1, 2, 5, 10, 20)
+    grid_sqrt <- sqrt(grid_original)
+    grid_labels <- as.character(grid_original)
+  } else {
+    grid_original <- c(1, 5, 10, 15, 20)
+    grid_sqrt <- grid_original
+    grid_labels <- as.character(grid_original)
+  }
+  grid_sqrt <- grid_sqrt[grid_sqrt <= max_plot_val]
+  grid_labels <- grid_labels[1:length(grid_sqrt)]
+  
+  # ============================================
+  # CREATE PLOT
+  # ============================================
+  
+  pdf(save_output(output_file), width = 14, height = 14)
+  
+  par(mar = c(1, 1, 1, 1))
+  
+  circos.clear()
+  
+  circos.par(
+    start.degree = 90,
+    gap.degree = c(rep(4, nrow(features_per_block) - 1), 12),
+    cell.padding = c(0, 0, 0, 0),
+    track.margin = c(0.005, 0.005),
+    canvas.xlim = c(-1.2, 1.2),
+    canvas.ylim = c(-1.2, 1.2)
+  )
+  
+  sectors <- features_per_block$block
+  xlims <- cbind(rep(0, nrow(features_per_block)), features_per_block$n_features)
+  
+  circos.initialize(
+    factors = factor(sectors, levels = features_per_block$block),
+    xlim = xlims
+  )
+  
+  # Track 1: Bars - LARGER, closer to center
+  circos.track(
+    factors = factor(sectors, levels = features_per_block$block),
+    ylim = c(-max_plot_val, max_plot_val),
+    track.height = 0.6,
+    bg.border = NA,
+    panel.fun = function(x, y) {
+      block_name <- CELL_META$sector.index
+      
+      block_data <- plot_data %>%
+        filter(block == block_name) %>%
+        arrange(feature_idx, factor(cvd_label, levels = cvd_order))
+      
+      if (nrow(block_data) == 0) return()
+      
+      features <- unique(block_data$feature[order(block_data$feature_idx)])
+      bar_width <- 0.2  # Slightly wider bars
+      
+      for (f_idx in seq_along(features)) {
+        feat <- features[f_idx]
+        feat_data <- block_data %>% 
+          filter(feature == feat) %>%
+          arrange(factor(cvd_label, levels = cvd_order))
+        
+        n_bars <- nrow(feat_data)
+        total_width <- n_bars * bar_width + (n_bars - 1) * 0.02
+        start_offset <- -total_width / 2 + bar_width / 2
+        
+        for (b_idx in 1:n_bars) {
+          cvd <- feat_data$cvd_label[b_idx]
+          bar_val <- feat_data$bar_value[b_idx]
+          sig <- feat_data$sig_stars[b_idx]
+          bar_col <- cvd_colors[cvd]
+          
+          bar_x <- (f_idx - 0.5) + start_offset + (b_idx - 1) * (bar_width + 0.02)
+          
+          circos.rect(
+            xleft = bar_x - bar_width/2,
+            xright = bar_x + bar_width/2,
+            ybottom = 0,
+            ytop = bar_val,
+            col = bar_col,
+            border = "white",
+            lwd = 0.5
+          )
+          
+          if (sig != "") {
+            text_y <- bar_val + sign(bar_val) * max_plot_val * 0.07
+            circos.text(
+              x = bar_x, y = text_y,
+              labels = sig,
+              facing = "inside",
+              niceFacing = TRUE,
+              cex = 0.5,
+              col = "black"
+            )
+          }
+        }
+      }
+      
+      # Baseline
+      circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = 0, y1 = 0, col = "grey30", lwd = 1)
+      
+      # Gridlines
+      for (g in grid_sqrt) {
+        circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = g, y1 = g, col = "grey75", lwd = 0.5, lty = 3)
+        circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = -g, y1 = -g, col = "grey75", lwd = 0.5, lty = 3)
+      }
+    }
+  )
+  
+  # Track 2: Feature labels OUTSIDE - LONGER NAMES
+  circos.track(
+    factors = factor(sectors, levels = features_per_block$block),
+    ylim = c(0, 1),
+    track.height = 0.30,
+    bg.border = NA,
+    panel.fun = function(x, y) {
+      block_name <- CELL_META$sector.index
+      
+      block_features <- feature_order %>%
+        filter(block == block_name) %>%
+        arrange(feature_idx)
+      
+      for (i in 1:nrow(block_features)) {
+        feat <- block_features$feature[i]
+        
+        # Clean feature name - LONGER LIMIT
+        feat_clean <- feat %>%
+          gsub("_", " ", .) %>%
+          gsub("\\.", " ", .)
+        
+        # Increase character limit to 40
+        if (nchar(feat_clean) > 40) {
+          feat_clean <- paste0(substr(feat_clean, 1, 37), "...")
+        }
+        
+        circos.text(
+          x = i - 0.5,
+          y = 0.5,
+          labels = feat_clean,
+          facing = "clockwise",
+          niceFacing = TRUE,
+          adj = c(0, 0.5),
+          cex = 0.5  # Slightly larger text
+        )
+      }
+    }
+  )
+  
+  # Block labels OUTSIDE
+  for (i in 1:nrow(features_per_block)) {
+    block_name <- as.character(features_per_block$block[i])
+    block_label <- features_per_block$block_label[i]
+    
+    theta_start <- get.cell.meta.data("cell.start.degree", sector.index = block_name, track.index = 2)
+    theta_end <- get.cell.meta.data("cell.end.degree", sector.index = block_name, track.index = 2)
+    theta_mid <- (theta_start + theta_end) / 2
+    
+    theta_rad <- theta_mid * pi / 180
+    r_outer <- 1.05
+    
+    x_pos <- r_outer * cos(theta_rad)
+    y_pos <- r_outer * sin(theta_rad)
+    
+    text_angle <- theta_mid - 90
+    if (theta_mid > 90 && theta_mid < 270) {
+      text_angle <- theta_mid + 90
+    }
+    
+    text(x_pos, y_pos, block_label, srt = text_angle, cex = 1.0, font = 2, adj = 0.5)
+  }
+  
+  # Center title - SMALLER
+  text(0, 0, title, cex = 0.9, font = 2, col = "grey30")
+  
+  # Scale labels
+  set.current.cell(sector.index = as.character(features_per_block$block[1]), track.index = 1)
+  for (i in seq_along(grid_sqrt)) {
+    circos.text(x = -0.3, y = grid_sqrt[i], labels = grid_labels[i], cex = 0.5, col = "grey40")
+  }
+  
+  # Legends - LARGER, better positioned
+  legend(
+    x = 0.5, y = -0.85,
+    legend = names(cvd_colors),
+    fill = cvd_colors,
+    border = NA,
+    title = "CVD Score",
+    title.font = 2,
+    cex = 0.85,
+    bty = "n",
+    ncol = 2
+  )
+  
+  legend(
+    x = -1.1, y = -0.85,
+    legend = c("Outward = Risk-Increasing (β > 0)", "Inward = Risk-Decreasing (β < 0)"),
+    title = "Effect Direction",
+    title.font = 2,
+    cex = 0.75,
+    bty = "n"
+  )
+  
+  legend(
+    x = -0.3, y = -1.0,
+    legend = c("* q < 0.05", "** q < 0.01", "*** q < 0.001"),
+    title = "Significance",
+    title.font = 2,
+    cex = 0.75,
+    bty = "n",
+    ncol = 3
+  )
+  
+  # Scale note
+  if (use_sqrt_scale) {
+    text(0, -1.1, "Scale: √(Δ MSE) - gridline values in original units", cex = 0.7, col = "grey40")
+  }
+  
+  circos.clear()
+  dev.off()
+  
+  cat(sprintf("\n✓ Saved to %s\n", output_file))
+  
+  invisible(list(data = plot_data, features_per_block = features_per_block))
+}
+
+
+# ============================================
+# RUN
+# ============================================
+
+cat("\n=== Creating circular plots v4 (better proportions) ===\n")
+
+# Score + blocks
+result_spb <- create_circular_importance_plot_v4(
+  importance_df = importance_results_full$aggregated,
+  coefficient_df = coefficient_directions_full,
+  result_type = "score_plus_block",
+  title = "Feature\nImportance",
+  output_file = "circular_importance_score_plus_blocks_v6.pdf",
+  use_sqrt_scale = TRUE
+)
+
+# Common
+result_common <- create_circular_importance_plot_v4(
+  importance_df = importance_results_common$aggregated,
+  coefficient_df = coefficient_directions_common,
+  result_type = "common",
+  title = "Feature\nImportance",
+  output_file = "circular_importance_common_v6.pdf",
+  use_sqrt_scale = TRUE
+)
+
+cat("\n✓ Done\n")
+
+# ============================================
+# 19. SIGNIFICANT-ONLY IMPORTANCE TABLES
+# ============================================
+
+#' Create importance table with ONLY features significant in at least one score
+create_significant_only_table <- function(importance_df,
+                                          coefficient_df,
+                                          dataset_pattern,
+                                          min_importance = 0,
+                                          result_type = "score_plus_block") {
+  if (result_type == "score_plus_block") {
+    data_filtered <- importance_df %>%
+      filter(grepl(paste0("_specific\\+", dataset_pattern, "$"), dataset_name))
+  } else {
+    data_filtered <- importance_df %>%
+      filter(dataset_name == dataset_pattern)
+  }
+  
+  if (nrow(data_filtered) == 0) {
+    warning(sprintf("No data found for pattern: %s", dataset_pattern))
+    return(NULL)
+  }
+  
+  data_joined <- data_filtered %>%
+    left_join(
+      coefficient_df %>%
+        select(cvd_score, dataset_name, feature, coefficient, direction),
+      by = c("cvd_score", "dataset_name", "feature")
+    )
+  
+  data_positive <- data_joined %>% filter(importance > min_importance)
+  if (nrow(data_positive) == 0) {
+    warning(sprintf("No features with importance > %s for: %s", min_importance, dataset_pattern))
+    return(NULL)
+  }
+  
+  # Features significant in at least one score
+  significant_features <- data_positive %>%
+    filter(p_value_bh < 0.05) %>% pull(feature) %>% unique()
+  
+  if (length(significant_features) == 0) {
+    warning(sprintf("No significant features for: %s", dataset_pattern))
+    return(NULL)
+  }
+  
+  data_significant <- data_positive %>%
+    filter(feature %in% significant_features) %>%
+    mutate(
+      sig_stars = case_when(
+        p_value_bh < 0.001 ~ "***", p_value_bh < 0.01 ~ "**",
+        p_value_bh < 0.05 ~ "*", TRUE ~ ""
+      ),
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD")
+    )
+  
+  feature_order <- data_significant %>%
+    group_by(feature) %>%
+    summarise(avg_importance = mean(importance, na.rm = TRUE),
+              n_significant = sum(p_value_bh < 0.05, na.rm = TRUE),
+              .groups = "drop") %>%
+    arrange(desc(n_significant), desc(avg_importance))
+  
+  score_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
+  
+  values_wide <- data_significant %>%
+    select(feature, cvd_label, sig_stars) %>%
+    pivot_wider(names_from = cvd_label, values_from = sig_stars, values_fill = NA_character_)
+  
+  directions_wide <- data_significant %>%
+    select(feature, cvd_label, direction) %>%
+    pivot_wider(names_from = cvd_label, values_from = direction, values_fill = NA_character_)
+  
+  table_final <- feature_order %>%
+    select(feature, avg_importance, n_significant) %>%
+    left_join(values_wide, by = "feature") %>%
+    arrange(desc(n_significant), desc(avg_importance))
+  
+  directions_final <- feature_order %>%
+    select(feature) %>%
+    left_join(directions_wide, by = "feature")
+  
+  score_cols_present <- intersect(score_order, names(table_final))
+  table_final <- table_final %>% select(feature, all_of(score_cols_present))
+  directions_final <- directions_final %>% select(feature, any_of(score_cols_present))
+  
+  list(
+    table = table_final, directions = directions_final,
+    n_features = nrow(table_final),
+    n_total_positive = n_distinct(data_positive$feature),
+    dataset = dataset_pattern, score_cols = score_cols_present
+  )
+}
+
+
+#' Render significant-only table as flextable
+render_significant_flextable <- function(table_data, title = NULL) {
+  if (is.null(table_data)) return(NULL)
+  
+  tbl <- table_data$table
+  dirs <- table_data$directions
+  score_cols <- table_data$score_cols
+  
+  for (col in score_cols) tbl[[col]] <- ifelse(is.na(tbl[[col]]), "", tbl[[col]])
+  
+  ft <- flextable(tbl) %>%
+    set_header_labels(feature = "Feature") %>%
+    align(j = 1, align = "left", part = "all") %>%
+    align(j = score_cols, align = "center", part = "all") %>%
+    bold(part = "header") %>%
+    fontsize(size = 9, part = "body") %>%
+    fontsize(size = 10, part = "header") %>%
+    font(fontname = "Arial", part = "all") %>%
+    width(j = "feature", width = 2.5) %>%
+    width(j = score_cols, width = 1.0) %>%
+    border_remove() %>%
+    hline_top(border = fp_border(width = 2), part = "all") %>%
+    hline_bottom(border = fp_border(width = 2), part = "body") %>%
+    hline(i = 1, border = fp_border(width = 1.5), part = "header") %>%
+    padding(padding = 4, part = "all")
+  
+  for (col in score_cols) {
+    for (i in 1:nrow(tbl)) {
+      direction <- dirs[[col]][i]
+      if (!is.na(direction) && direction %in% c("Risk-Increasing", "Risk-Decreasing")) {
+        bg_color <- if (direction == "Risk-Increasing") "#FDDBC7" else "#D1E5F0"
+        text_color <- if (direction == "Risk-Increasing") "#B35806" else "#2166AC"
+        ft <- ft %>%
+          bg(i = i, j = col, bg = bg_color, part = "body") %>%
+          color(i = i, j = col, color = text_color, part = "body") %>%
+          bold(i = i, j = col, part = "body")
+      }
+    }
+  }
+  
+  if (!is.null(title)) ft <- set_caption(ft, caption = title)
+  
+  footnote_text <- sprintf(
+    "Showing %d features significant (q < 0.05) in ≥1 score (of %d with positive importance) | * q<0.05, ** q<0.01, *** q<0.001 | Orange = β > 0, Blue = β < 0 | Empty = not selected or importance ≤ 0",
+    table_data$n_features, table_data$n_total_positive
+  )
+  ft <- ft %>%
+    add_footer_lines(values = footnote_text) %>%
+    fontsize(size = 8, part = "footer") %>%
+    italic(part = "footer")
+  ft
+}
+
+
+#' Create and save significant-only tables for all datasets
+create_significant_tables <- function(importance_results, coefficient_directions,
+                                      datasets = c("all_data", "lipids", "fatty_acids",
+                                                   "urine_nmr", "body_composition",
+                                                   "clinical_risk_factors",
+                                                   "sociodemographics_lifestyle"),
+                                      output_dir = "importance_tables_significant",
+                                      result_type = "score_plus_block",
+                                      dataset_labels = NULL) {
+  full_output_dir <- save_output(output_dir)
+  dir.create(full_output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  importance_df <- importance_results$aggregated
+  if (is.null(dataset_labels)) {
+    dataset_labels <- c(
+      "all_data" = "All Predictors", "lipids" = "Lipids",
+      "fatty_acids" = "Fatty Acids", "urine_nmr" = "Urine NMR Metabolites",
+      "body_composition" = "Body Composition",
+      "clinical_risk_factors" = "Clinical Risk Factors",
+      "sociodemographics_lifestyle" = "Sociodemographics & Lifestyle"
+    )
+  }
+  
+  type_label <- if (result_type == "score_plus_block") "Score-Specific + " else ""
+  cat(sprintf("\nCreating SIGNIFICANT-ONLY tables for %d datasets (%s)...\n",
+              length(datasets),
+              if (result_type == "score_plus_block") "score+block" else "blocks only"))
+  
+  all_tables <- list()
+  for (ds in datasets) {
+    cat(sprintf("  %s: ", ds))
+    table_data <- create_significant_only_table(
+      importance_df, coefficient_directions, ds, 0, result_type
+    )
+    if (is.null(table_data)) { cat("No significant features\n"); next }
+    cat(sprintf("%d significant features (of %d positive)\n",
+                table_data$n_features, table_data$n_total_positive))
+    
+    title_text <- paste0("Significant Features: ", type_label,
+                         ifelse(ds %in% names(dataset_labels), dataset_labels[ds], ds))
+    ft <- render_significant_flextable(table_data, title = title_text)
+    
+    save_as_docx(ft, path = file.path(full_output_dir, paste0("significant_table_", ds, ".docx")))
+    save_as_html(ft, path = file.path(full_output_dir, paste0("significant_table_", ds, ".html")))
+    all_tables[[ds]] <- list(data = table_data, flextable = ft)
+  }
+  
+  if (length(all_tables) > 0) {
+    cat("\nCreating combined document...\n")
+    combined_doc <- read_docx()
+    combined_doc <- body_add_par(combined_doc, "Significant Features Only", style = "heading 1")
+    combined_doc <- body_add_par(combined_doc,
+                                 paste0(type_label, "Predictor Blocks"),
+                                 style = "heading 2")
+    combined_doc <- body_add_par(combined_doc,
+                                 sprintf("Adjusted for: %s | Features with q < 0.05 in ≥1 CVD score",
+                                         paste(COVARIATE_COLS, collapse = ", ")))
+    combined_doc <- body_add_par(combined_doc, "")
+    for (ds in names(all_tables)) {
+      title_text <- ifelse(ds %in% names(dataset_labels), dataset_labels[ds], ds)
+      combined_doc <- body_add_par(combined_doc, title_text, style = "heading 3")
+      combined_doc <- body_add_flextable(combined_doc, value = all_tables[[ds]]$flextable)
+      combined_doc <- body_add_break(combined_doc)
+    }
+    print(combined_doc, target = file.path(full_output_dir, "Significant_Features_Combined.docx"))
+  }
+  
+  cat(sprintf("✓ Tables saved to %s/\n", output_dir))
+  all_tables
+}
+
+
+# ---- Run significant tables ----
+cat("\n=== SIGNIFICANT-ONLY tables for SCORE+BLOCKS ===\n")
+significant_tables_score_plus_blocks <- create_significant_tables(
+  importance_results_full, coefficient_directions_full,
+  output_dir = "significant_tables_score_plus_blocks",
+  result_type = "score_plus_block"
+)
+
+cat("\n=== SIGNIFICANT-ONLY tables for COMMON (blocks only) ===\n")
+significant_tables_common <- create_significant_tables(
+  importance_results_common, coefficient_directions_common,
+  output_dir = "significant_tables_common",
+  result_type = "common"
+)
+
+
+# ============================================
+# 20. CIRCULAR IMPORTANCE PLOT
+# ============================================
+
+create_circular_importance_plot <- function(importance_df, coefficient_df,
+                                            result_type = "score_plus_block",
+                                            title = "Feature\nImportance",
+                                            output_file = "circular_importance.pdf",
+                                            use_sqrt_scale = TRUE) {
+  
+  block_info <- tibble(
+    block = c("body_composition", "clinical_risk_factors", "sociodemographics_lifestyle",
+              "fatty_acids", "urine_nmr", "lipids"),
+    block_label = c("Body Composition", "Clinical Risk Factors", "Sociodemographics",
+                    "Fatty Acids", "Urine NMR", "Lipids")
+  )
+  
+  # Match violin plot colours
+  cvd_colors <- c(
+    "QRISK3" = "#F8766D",
+    "SCORE2" = "#00BA38",
+    "Framingham" = "#B79F00",
+    "ASCVD" = "#619CFF"
+  )
+  cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
+  
+  if (result_type == "score_plus_block") {
+    plot_data <- importance_df %>% mutate(block = sub("^.*_specific\\+", "", dataset_name))
+  } else {
+    plot_data <- importance_df %>% mutate(block = dataset_name)
+  }
+  
+  plot_data <- plot_data %>%
+    filter(block %in% block_info$block, importance > 0, p_value_bh < 0.05) %>%
+    left_join(
+      coefficient_df %>% select(cvd_score, dataset_name, feature, direction),
+      by = c("cvd_score", "dataset_name", "feature")
+    ) %>%
+    mutate(
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+      plot_importance = if (use_sqrt_scale) sqrt(importance) else importance,
+      bar_value = ifelse(direction == "Risk-Increasing", plot_importance, -plot_importance),
+      sig_stars = case_when(
+        p_value_bh < 0.001 ~ "***", p_value_bh < 0.01 ~ "**",
+        p_value_bh < 0.05 ~ "*", TRUE ~ ""
+      )
+    ) %>%
+    filter(!is.na(direction), direction != "Zero")
+  
+  cat(sprintf("Total significant features: %d\n", n_distinct(plot_data$feature)))
+  
+  plot_data <- plot_data %>%
+    left_join(block_info, by = "block") %>%
+    mutate(block = factor(block, levels = block_info$block))
+  
+  feature_order <- plot_data %>%
+    group_by(block, feature) %>%
+    summarise(avg_imp = mean(importance, na.rm = TRUE), n_scores = n(), .groups = "drop") %>%
+    arrange(block, desc(avg_imp)) %>%
+    group_by(block) %>% mutate(feature_idx = row_number()) %>% ungroup()
+  
+  plot_data <- plot_data %>%
+    left_join(feature_order %>% select(block, feature, feature_idx, n_scores),
+              by = c("block", "feature"))
+  
+  features_per_block <- feature_order %>%
+    group_by(block) %>% summarise(n_features = n(), .groups = "drop") %>%
+    left_join(block_info, by = "block") %>%
+    filter(n_features > 0) %>%
+    arrange(match(block, block_info$block))
+  
+  cat("\nFeatures per block:\n")
+  print(features_per_block)
+  
+  max_plot_val <- max(abs(plot_data$bar_value), na.rm = TRUE) * 1.1
+  
+  if (use_sqrt_scale) {
+    grid_original <- c(0.5, 1, 2, 5, 10, 20)
+    grid_sqrt <- sqrt(grid_original)
+    grid_labels <- as.character(grid_original)
+  } else {
+    grid_original <- c(1, 5, 10, 15, 20)
+    grid_sqrt <- grid_original
+    grid_labels <- as.character(grid_original)
+  }
+  grid_sqrt <- grid_sqrt[grid_sqrt <= max_plot_val]
+  grid_labels <- grid_labels[1:length(grid_sqrt)]
+  
+  # ---- Draw circular plot ----
+  pdf(save_output(output_file), width = 14, height = 14)
+  par(mar = c(1, 1, 1, 1))
+  circos.clear()
+  
+  circos.par(
+    start.degree = 90,
+    gap.degree = c(rep(4, nrow(features_per_block) - 1), 12),
+    cell.padding = c(0, 0, 0, 0),
+    track.margin = c(0.005, 0.005),
+    canvas.xlim = c(-1.2, 1.2), canvas.ylim = c(-1.2, 1.2)
+  )
+  
+  sectors <- features_per_block$block
+  xlims <- cbind(rep(0, nrow(features_per_block)), features_per_block$n_features)
+  
+  circos.initialize(
+    factors = factor(sectors, levels = features_per_block$block),
+    xlim = xlims
+  )
+  
+  # Track 1: Bars
+  circos.track(
+    factors = factor(sectors, levels = features_per_block$block),
+    ylim = c(-max_plot_val, max_plot_val),
+    track.height = 0.6, bg.border = NA,
+    panel.fun = function(x, y) {
+      block_name <- CELL_META$sector.index
+      block_data <- plot_data %>%
+        filter(block == block_name) %>%
+        arrange(feature_idx, factor(cvd_label, levels = cvd_order))
+      if (nrow(block_data) == 0) return()
+      
+      features <- unique(block_data$feature[order(block_data$feature_idx)])
+      bar_width <- 0.2
+      
+      for (f_idx in seq_along(features)) {
+        feat <- features[f_idx]
+        feat_data <- block_data %>%
+          filter(feature == feat) %>%
+          arrange(factor(cvd_label, levels = cvd_order))
+        
+        n_bars <- nrow(feat_data)
+        total_width <- n_bars * bar_width + (n_bars - 1) * 0.02
+        start_offset <- -total_width / 2 + bar_width / 2
+        
+        for (b_idx in 1:n_bars) {
+          cvd <- feat_data$cvd_label[b_idx]
+          bar_val <- feat_data$bar_value[b_idx]
+          sig <- feat_data$sig_stars[b_idx]
+          
+          bar_x <- (f_idx - 0.5) + start_offset + (b_idx - 1) * (bar_width + 0.02)
+          
+          circos.rect(
+            xleft = bar_x - bar_width/2, xright = bar_x + bar_width/2,
+            ybottom = 0, ytop = bar_val,
+            col = cvd_colors[cvd], border = "white", lwd = 0.5
+          )
+          
+          if (sig != "") {
+            text_y <- bar_val + sign(bar_val) * max_plot_val * 0.07
+            circos.text(x = bar_x, y = text_y, labels = sig,
+                        facing = "inside", niceFacing = TRUE, cex = 0.5, col = "black")
+          }
+        }
+      }
+      
+      circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = 0, y1 = 0, col = "grey30", lwd = 1)
+      for (g in grid_sqrt) {
+        circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = g, y1 = g, col = "grey75", lwd = 0.5, lty = 3)
+        circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = -g, y1 = -g, col = "grey75", lwd = 0.5, lty = 3)
+      }
+    }
+  )
+  
+  # Track 2: Feature labels
+  circos.track(
+    factors = factor(sectors, levels = features_per_block$block),
+    ylim = c(0, 1), track.height = 0.30, bg.border = NA,
+    panel.fun = function(x, y) {
+      block_name <- CELL_META$sector.index
+      block_features <- feature_order %>%
+        filter(block == block_name) %>% arrange(feature_idx)
+      
+      for (i in 1:nrow(block_features)) {
+        feat_clean <- block_features$feature[i] %>%
+          gsub("_", " ", .) %>% gsub("\\.", " ", .)
+        if (nchar(feat_clean) > 40) feat_clean <- paste0(substr(feat_clean, 1, 37), "...")
+        
+        circos.text(x = i - 0.5, y = 0.5, labels = feat_clean,
+                    facing = "clockwise", niceFacing = TRUE,
+                    adj = c(0, 0.5), cex = 0.5)
+      }
+    }
+  )
+  
+  # Block labels outside
+  for (i in 1:nrow(features_per_block)) {
+    block_name <- as.character(features_per_block$block[i])
+    block_label <- features_per_block$block_label[i]
+    
+    theta_start <- get.cell.meta.data("cell.start.degree", sector.index = block_name, track.index = 2)
+    theta_end <- get.cell.meta.data("cell.end.degree", sector.index = block_name, track.index = 2)
+    theta_mid <- (theta_start + theta_end) / 2
+    theta_rad <- theta_mid * pi / 180
+    
+    x_pos <- 1.05 * cos(theta_rad)
+    y_pos <- 1.05 * sin(theta_rad)
+    text_angle <- theta_mid - 90
+    if (theta_mid > 90 && theta_mid < 270) text_angle <- theta_mid + 90
+    
+    text(x_pos, y_pos, block_label, srt = text_angle, cex = 1.0, font = 2, adj = 0.5)
+  }
+  
+  text(0, 0, title, cex = 0.9, font = 2, col = "grey30")
+  
+  # Scale labels
+  set.current.cell(sector.index = as.character(features_per_block$block[1]), track.index = 1)
+  for (i in seq_along(grid_sqrt)) {
+    circos.text(x = -0.3, y = grid_sqrt[i], labels = grid_labels[i], cex = 0.5, col = "grey40")
+  }
+  
+  legend(x = 0.5, y = -0.85, legend = names(cvd_colors), fill = cvd_colors,
+         border = NA, title = "CVD Score", title.font = 2, cex = 0.85, bty = "n", ncol = 2)
+  legend(x = -1.1, y = -0.85,
+         legend = c("Outward = Risk-Increasing (β > 0)", "Inward = Risk-Decreasing (β < 0)"),
+         title = "Effect Direction", title.font = 2, cex = 0.75, bty = "n")
+  legend(x = -0.3, y = -1.0, legend = c("* q < 0.05", "** q < 0.01", "*** q < 0.001"),
+         title = "Significance", title.font = 2, cex = 0.75, bty = "n", ncol = 3)
+  
+  if (use_sqrt_scale) {
+    text(0, -1.1, "Scale: sqrt(delta MSE) - gridline values in original units", cex = 0.7, col = "grey40")
+  }
+  
+  circos.clear()
+  dev.off()
+  
+  cat(sprintf("\n✓ Saved to %s\n", output_file))
+  invisible(list(data = plot_data, features_per_block = features_per_block))
+}
+
+
+# ---- Run circular plots ----
+cat("\n=== Creating circular importance plots ===\n")
+
+result_spb <- create_circular_importance_plot(
+  importance_df = importance_results_full$aggregated,
+  coefficient_df = coefficient_directions_full,
+  result_type = "score_plus_block",
+  title = "Feature\nImportance",
+  output_file = "circular_importance_score_plus_blocks.pdf",
+  use_sqrt_scale = TRUE
+)
+
+result_common <- create_circular_importance_plot(
+  importance_df = importance_results_common$aggregated,
+  coefficient_df = coefficient_directions_common,
+  result_type = "common",
+  title = "Feature\nImportance",
+  output_file = "circular_importance_common.pdf",
+  use_sqrt_scale = TRUE
+)
+
+cat("\n✓ All done\n")
