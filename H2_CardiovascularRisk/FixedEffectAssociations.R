@@ -8,6 +8,7 @@ library(broom)
 library(patchwork)
 library(flextable)
 library(DHARMa)
+library(readxl)
 
 set.seed(42)
 
@@ -34,6 +35,14 @@ df_all_cvd_risk_scores <- readRDS("df_all_risk_scores.rds") %>%
 df_body_composition <- readRDS("df_body_composition_metrics.rds") %>%
   arrange(Sample_ID) %>%
   full_join(df_risk_factors %>% select(z_Body.fat, z_Fat.free.mass, Sample_ID), by = "Sample_ID")
+
+df_hypertension_treatment <- read_excel("../QRISK3_data.xlsx", sheet = "bp_medication") %>%
+  mutate(Sample_ID = str_replace_all(Sample_ID, "-", "_"))
+
+df_qrisk3_input <- readRDS("QRISK3_calculation_input.rds") %>%
+  rename(Sample_ID = PatientID) %>%
+  arrange(Sample_ID) %>%
+  mutate(z_systolic = as.numeric(scale(systolic)))
 
 # ─── 2. Prepare Merged DataFrames for GLM ────────────────────────────────────
 df_fixed_effects <- df_risk_factors %>%
@@ -73,7 +82,7 @@ risk_factor_predictors  <- names(select(df_risk_factors, starts_with("z_"), -z_B
 body_comp_predictors    <- names(select(df_body_composition, starts_with("z_")))
 urine_nmr_predictors    <- names(select(df_urine_nmr_data, starts_with("z_")))
 
-outcomes <- c("QRISK3_risk", "SCORE2_score", "ascvd_10y", "frs_10y", "mean_risk")
+outcomes <- c("QRISK3_risk", "SCORE2_score", "ascvd_10y", "frs_10y")
 
 fixed_effects <- c("Statins", "Supplements", "Gender", "Country")
 
@@ -145,6 +154,18 @@ glm_risk_num      <- run_glm_num(df_cvd_and_risk_factors, outcomes, risk_factor_
 glm_body_comp_num <- run_glm_num(df_cvd_and_body_comp, outcomes, body_comp_predictors, fixed_effects)
 glm_REDcap_fac    <- run_glm_fac(df_cvd_and_REDcap, outcomes, REDcap_factor_preds, fixed_effects)
 
+# Save incremental results
+incremental_dir <- file.path(wkdir, "glm_incremental_results")
+dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
+
+saveRDS(glm_lipid_num,     file.path(incremental_dir, "glm_lipid_num.rds"))
+saveRDS(glm_fatty_num,     file.path(incremental_dir, "glm_fatty_num.rds"))
+saveRDS(glm_urine_num,     file.path(incremental_dir, "glm_urine_num.rds"))
+saveRDS(glm_REDcap_num,    file.path(incremental_dir, "glm_REDcap_num.rds"))
+saveRDS(glm_risk_num,      file.path(incremental_dir, "glm_risk_num.rds"))
+saveRDS(glm_body_comp_num, file.path(incremental_dir, "glm_body_comp_num.rds"))
+saveRDS(glm_REDcap_fac,    file.path(incremental_dir, "glm_REDcap_fac.rds"))
+
 # ─── 6. Combine Results and Apply Multiple Testing Correction ────────────────
 all_results_glm <- bind_rows(
   glm_lipid_num     %>% mutate(predictor_set = "Lipids", comparison = NA_character_),
@@ -164,7 +185,9 @@ all_results_glm <- bind_rows(
 cat("Total associations tested:", nrow(all_results_glm), "\n")
 cat("Significant (BH-adjusted p < 0.05):", sum(all_results_glm$significant == "Significant", na.rm = TRUE), "\n")
 
-# ─── 7. Plotting Helpers ─────────────────────────────────────────────────────
+saveRDS(all_results_glm, file.path(incremental_dir, "all_results_glm_combined.rds"))
+
+# ─── 7. Display Helpers ──────────────────────────────────────────────────────
 rename_predictors <- function(term_plot) {
   case_when(
     term_plot == "z_ecw_tbw"                      ~ "Extracellular water / Total body water",
@@ -193,7 +216,6 @@ rename_outcomes <- function(outcome) {
   case_when(
     outcome == "ascvd_10y"     ~ "ASCVD",
     outcome == "frs_10y"       ~ "Framingham",
-    outcome == "mean_risk"     ~ "Composite Score",
     outcome == "QRISK3_risk"   ~ "QRISK3",
     outcome == "SCORE2_score"  ~ "SCORE2",
     TRUE ~ outcome
@@ -310,7 +332,6 @@ p_categorical <- ggplot(heatmap_categorical,
     plot.margin = margin(0, 5, 5, 5), panel.spacing = unit(0.5, "lines")
   )
 
-# Combine
 n_cont <- length(unique(heatmap_continuous$term_plot_clean))
 n_cat  <- length(unique(heatmap_categorical$term_plot_clean))
 
@@ -352,7 +373,6 @@ heatmap_exploratory <- all_results_glm %>%
     is_categorical  = grepl("Lifestyle", predictor_set)
   )
 
-# Keep predictors with ≥3 nominally significant associations
 preds_3plus <- heatmap_exploratory %>%
   filter(is_nominal_sig) %>%
   group_by(term_plot_clean) %>%
@@ -364,7 +384,6 @@ heatmap_exp_filtered <- heatmap_exploratory %>% filter(term_plot_clean %in% pred
 heatmap_cont_exp <- heatmap_exp_filtered %>% filter(!is_categorical)
 heatmap_cat_exp  <- heatmap_exp_filtered %>% filter(is_categorical)
 
-# Order
 term_order_cont_exp <- heatmap_cont_exp %>%
   group_by(term_plot_clean, predictor_set) %>%
   summarise(mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
@@ -402,7 +421,6 @@ p_cont_exp <- ggplot(heatmap_cont_exp,
     plot.margin = margin(5, 5, 0, 5), panel.spacing = unit(0.5, "lines")
   )
 
-# Combine (with or without categorical panel)
 if (nrow(heatmap_cat_exp) > 0) {
   term_order_cat_exp <- heatmap_cat_exp %>%
     group_by(term_plot_clean) %>%
@@ -459,7 +477,7 @@ combined_exploratory <- combined_exploratory +
     subtitle = "● indicates predictors with ≥3 nominal significant associations (p < 0.05, FDR p > 0.05)",
     caption  = paste0(
       "Model: outcome ~ predictor + Statins + Supplements + Sex + Country (Gamma GLM, log link)\n",
-      "Excludes FDR-significant predictors | Separate scales for continuous and categorical"
+      "Excludes FDR-significant predictors"
     ),
     theme = theme(
       plot.title = element_text(size = 17, face = "bold"),
@@ -472,7 +490,6 @@ ggsave("exploratory_heatmap_3plus_scores_split.png", combined_exploratory,
        width = 12, height = plot_height_exp, dpi = 300)
 
 # ─── 10. Supplementary Tables ────────────────────────────────────────────────
-# Wide-format table for each predictor set
 create_wide_supp_table <- function(data, predictor_set_name) {
   df_wide <- data %>%
     filter(predictor_set == predictor_set_name) %>%
@@ -485,7 +502,6 @@ create_wide_supp_table <- function(data, predictor_set_name) {
     select(term_clean, outcome, RR_CI, p_val, p_adj) %>%
     pivot_wider(names_from = outcome, values_from = c(RR_CI, p_val, p_adj), names_sep = "___")
   
-  # Reorder columns by outcome
   df_wide <- df_wide %>%
     select(
       term_clean,
@@ -493,68 +509,53 @@ create_wide_supp_table <- function(data, predictor_set_name) {
       starts_with("RR_CI___SCORE2"), starts_with("p_val___SCORE2"), starts_with("p_adj___SCORE2"),
       starts_with("RR_CI___ascvd"),  starts_with("p_val___ascvd"),  starts_with("p_adj___ascvd"),
       starts_with("RR_CI___frs"),    starts_with("p_val___frs"),    starts_with("p_adj___frs"),
-      starts_with("RR_CI___mean"),   starts_with("p_val___mean"),   starts_with("p_adj___mean")
     )
   
-  ft <- df_wide %>%
+  df_wide %>%
     flextable() %>%
     set_header_labels(
       term_clean = "Predictor",
       RR_CI___QRISK3_risk = "RR(95%CI)", p_val___QRISK3_risk = "p", p_adj___QRISK3_risk = "p.adj",
       RR_CI___SCORE2_score = "RR(95%CI)", p_val___SCORE2_score = "p", p_adj___SCORE2_score = "p.adj",
       RR_CI___ascvd_10y = "RR(95%CI)", p_val___ascvd_10y = "p", p_adj___ascvd_10y = "p.adj",
-      RR_CI___frs_10y = "RR(95%CI)", p_val___frs_10y = "p", p_adj___frs_10y = "p.adj",
-      RR_CI___mean_risk = "RR(95%CI)", p_val___mean_risk = "p", p_adj___mean_risk = "p.adj"
+      RR_CI___frs_10y = "RR(95%CI)", p_val___frs_10y = "p", p_adj___frs_10y = "p.adj"
     ) %>%
     add_header_row(
-      values = c("", "QRISK3", "SCORE2", "ASCVD", "Framingham", "Composite"),
-      colwidths = c(1, 3, 3, 3, 3, 3)
+      values = c("", "QRISK3", "SCORE2", "ASCVD", "Framingham"),
+      colwidths = c(1, 3, 3, 3, 3)
     ) %>%
     theme_booktabs() %>%
     width(j = 1, width = 1.5) %>%
-    width(j = c(2, 5, 8, 11, 14), width = 1.0) %>%
-    width(j = c(3, 6, 9, 12, 15), width = 0.5) %>%
-    width(j = c(4, 7, 10, 13, 16), width = 0.5) %>%
+    width(j = c(2, 5, 8, 11), width = 1.0) %>%
+    width(j = c(3, 6, 9, 12), width = 0.5) %>%
+    width(j = c(4, 7, 10, 13), width = 0.5) %>%
     align(j = 1, align = "left", part = "all") %>%
     align(j = 2:ncol(df_wide), align = "center", part = "all") %>%
     bold(part = "header") %>%
     merge_h(part = "header") %>%
-    vline(j = c(1, 4, 7, 10, 13), border = fp_border(width = 1.5), part = "all") %>%
+    vline(j = c(1, 4, 7, 10), border = fp_border(width = 1.5), part = "all") %>%
     font(fontname = "Arial", part = "all") %>%
     hrule(rule = "exact")
-  
-  return(ft)
 }
 
-ft_lipids       <- create_wide_supp_table(all_results_glm, "Lipids")
-ft_fatty_acids  <- create_wide_supp_table(all_results_glm, "Fatty acids")
-ft_urine_nmr    <- create_wide_supp_table(all_results_glm, "Urine NMR")
-ft_redcap_num   <- create_wide_supp_table(all_results_glm, "REDCap numeric")
-ft_redcap_fac   <- create_wide_supp_table(all_results_glm, "REDCap factors")
-ft_risk_factors <- create_wide_supp_table(all_results_glm, "Risk factors")
-ft_body_comp    <- create_wide_supp_table(all_results_glm, "Body composition")
-
 save_as_docx(
-  "Table S2: Lipid Species"    = ft_lipids,
-  "Table S3: Fatty Acids"      = ft_fatty_acids,
-  "Table S4: Urine NMR"        = ft_urine_nmr,
-  "Table S5: REDCap Numeric"   = ft_redcap_num,
-  "Table S6: REDCap Factors"   = ft_redcap_fac,
-  "Table S7: Risk Factors"     = ft_risk_factors,
-  "Table S8: Body Composition" = ft_body_comp,
+  "Table S2: Lipid Species"    = create_wide_supp_table(all_results_glm, "Lipids"),
+  "Table S3: Fatty Acids"      = create_wide_supp_table(all_results_glm, "Fatty acids"),
+  "Table S4: Urine NMR"        = create_wide_supp_table(all_results_glm, "Urine NMR"),
+  "Table S5: REDCap Numeric"   = create_wide_supp_table(all_results_glm, "REDCap numeric"),
+  "Table S6: REDCap Factors"   = create_wide_supp_table(all_results_glm, "REDCap factors"),
+  "Table S7: Risk Factors"     = create_wide_supp_table(all_results_glm, "Risk factors"),
+  "Table S8: Body Composition" = create_wide_supp_table(all_results_glm, "Body composition"),
   path = "supplementary_tables_GLM_all.docx",
   pr_section = prop_section(page_size = page_size(orient = "landscape"))
 )
 
-##################################################################################
-# GLM Evaluation by devaince stas and DHARMa
-##################################################################################
-# ═══════════════════════════════════════════════════════════════════════════
-# MODEL DIAGNOSTICS: Deviance and DHARMa Tests
-# ═══════════════════════════════════════════════════════════════════════════
 
-# ─── 1. Deviance Statistics ──────────────────────────────────────────────────
-# Function to calculate deviance statistics
+################################################################################
+# MODEL DIAGNOSTICS: Deviance and DHARMa Tests
+################################################################################
+
+# ─── 11. Deviance Statistics ─────────────────────────────────────────────────
 calc_deviance_stats <- function(model, predictor, outcome, n) {
   tibble(
     predictor = predictor,
@@ -567,257 +568,384 @@ calc_deviance_stats <- function(model, predictor, outcome, n) {
   )
 }
 
-# Run for all predictor sets
+# Generic function to compute deviance for a predictor set
+run_deviance <- function(data, predictors, fixed_effects, outcomes, predictor_set_label) {
+  fixed_part <- paste(fixed_effects, collapse = " + ")
+  
+  map_dfr(predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- data %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (nrow(df_pair) == 0) return(tibble())
+      for (fe in fixed_effects) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", fixed_part)),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>%
+    mutate(predictor_set = predictor_set_label)
+}
+
 deviance_all <- bind_rows(
-  map_dfr(lipid_predictors, function(var) {
-    map_dfr(outcomes, function(outcome) {
-      df_pair <- df_cvd_and_lipidomics %>%
-        select(all_of(c(outcome, var, fixed_effects))) %>%
-        drop_na()
-      
-      if (nrow(df_pair) == 0) return(tibble())
-      
-      # Check each fixed effect has at least 2 levels
-      for (fe in fixed_effects) {
-        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
-      }
-      
-      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
-                   data = df_pair, family = Gamma(link = "log"))
-      calc_deviance_stats(model, var, outcome, nrow(df_pair))
-    })
-  }) %>% mutate(predictor_set = "Lipids"),
-  
-  map_dfr(fatty_acid_predictors, function(var) {
-    map_dfr(outcomes, function(outcome) {
-      df_pair <- df_cvd_and_fatty_acids %>%
-        select(all_of(c(outcome, var, fixed_effects))) %>%
-        drop_na()
-      
-      if (nrow(df_pair) == 0) return(tibble())
-      
-      # Check each fixed effect has at least 2 levels
-      for (fe in fixed_effects) {
-        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
-      }
-      
-      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
-                   data = df_pair, family = Gamma(link = "log"))
-      calc_deviance_stats(model, var, outcome, nrow(df_pair))
-    })
-  }) %>% mutate(predictor_set = "Fatty acids"),
-  
-  map_dfr(risk_factor_predictors, function(var) {
-    map_dfr(outcomes, function(outcome) {
-      df_pair <- df_cvd_and_risk_factors %>%
-        select(all_of(c(outcome, var, fixed_effects))) %>%
-        drop_na()
-      
-      if (nrow(df_pair) == 0) return(tibble())
-      
-      # Check each fixed effect has at least 2 levels
-      for (fe in fixed_effects) {
-        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
-      }
-      
-      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
-                   data = df_pair, family = Gamma(link = "log"))
-      calc_deviance_stats(model, var, outcome, nrow(df_pair))
-    })
-  }) %>% mutate(predictor_set = "Risk factors"),
-  
-  map_dfr(body_comp_predictors, function(var) {
-    map_dfr(outcomes, function(outcome) {
-      df_pair <- df_cvd_and_body_comp %>%
-        select(all_of(c(outcome, var, fixed_effects))) %>%
-        drop_na()
-      
-      if (nrow(df_pair) == 0) return(tibble())
-      
-      for (fe in fixed_effects) {
-        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
-      }
-      
-      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
-                   data = df_pair, family = Gamma(link = "log"))
-      calc_deviance_stats(model, var, outcome, nrow(df_pair))
-    })
-  }) %>% mutate(predictor_set = "Body composition"),
-  
-  map_dfr(urine_nmr_predictors, function(var) {
-    map_dfr(outcomes, function(outcome) {
-      df_pair <- df_cvd_and_urine_nmr %>%
-        select(all_of(c(outcome, var, fixed_effects))) %>%
-        drop_na()
-      
-      if (nrow(df_pair) == 0) return(tibble())
-      
-      for (fe in fixed_effects) {
-        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
-      }
-      
-      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
-                   data = df_pair, family = Gamma(link = "log"))
-      calc_deviance_stats(model, var, outcome, nrow(df_pair))
-    })
-  }) %>% mutate(predictor_set = "Urine NMR"),
-  
-  map_dfr(REDcap_numeric_preds, function(var) {
-    map_dfr(outcomes, function(outcome) {
-      df_pair <- df_cvd_and_REDcap %>%
-        select(all_of(c(outcome, var, fixed_effects))) %>%
-        drop_na()
-      
-      if (nrow(df_pair) == 0) return(tibble())
-      
-      for (fe in fixed_effects) {
-        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
-      }
-      
-      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
-                   data = df_pair, family = Gamma(link = "log"))
-      calc_deviance_stats(model, var, outcome, nrow(df_pair))
-    })
-  }) %>% mutate(predictor_set = "REDCap numeric")
+  run_deviance(df_cvd_and_lipidomics,   lipid_predictors,       fixed_effects, outcomes, "Lipids"),
+  run_deviance(df_cvd_and_fatty_acids,  fatty_acid_predictors,  fixed_effects, outcomes, "Fatty acids"),
+  run_deviance(df_cvd_and_risk_factors, risk_factor_predictors, fixed_effects, outcomes, "Risk factors"),
+  run_deviance(df_cvd_and_body_comp,    body_comp_predictors,   fixed_effects, outcomes, "Body composition"),
+  run_deviance(df_cvd_and_urine_nmr,    urine_nmr_predictors,  fixed_effects, outcomes, "Urine NMR"),
+  run_deviance(df_cvd_and_REDcap,       REDcap_numeric_preds,  fixed_effects, outcomes, "REDCap numeric")
 )
 
-# Summary by outcome
 deviance_summary <- deviance_all %>%
   group_by(outcome) %>%
   summarise(
     n_models = n(),
     mean_dev_ratio = mean(deviance_ratio),
     median_dev_ratio = median(deviance_ratio),
-    sd_dev_ratio = sd(deviance_ratio)
+    sd_dev_ratio = sd(deviance_ratio),
+    .groups = "drop"
   ) %>%
   arrange(desc(mean_dev_ratio))
 
-print("Deviance Summary by Outcome:")
+cat("\nDeviance Summary by Outcome:\n")
 print(deviance_summary)
 
-# ─── 2. DHARMa Diagnostics ───────────────────────────────────────────────────
-
-# Test one model per outcome (using first risk factor predictor)
-test_dharma_per_outcome <- function() {
-  pred_name <- risk_factor_predictors[1]  # z_AGE.reader
+# ─── 12. DHARMa Diagnostics ─────────────────────────────────────────────────
+dharma_results <- map_dfr(outcomes, function(outcome) {
+  pred_name <- risk_factor_predictors[1]
   
-  map_dfr(outcomes, function(outcome) {
-    df_pair <- df_cvd_and_risk_factors %>%
-      select(all_of(c(outcome, pred_name)), Statins, Supplements, Gender, Country) %>%
-      drop_na()
-    
-    model <- glm(
-      as.formula(paste(outcome, "~", pred_name, "+ Statins + Supplements + Gender + Country")),
-      data = df_pair, 
-      family = Gamma(link = "log")
-    )
-    
-    # DHARMa tests
-    sim_resid <- simulateResiduals(model, n = 1000, plot = FALSE)
-    
-    tibble(
-      outcome = outcome,
-      predictor = pred_name,
-      n = nrow(df_pair),
-      uniformity_p = testUniformity(sim_resid, plot = FALSE)$p.value,
-      dispersion_p = testDispersion(sim_resid, plot = FALSE)$p.value,
-      dispersion_stat = testDispersion(sim_resid, plot = FALSE)$statistic,
-      outlier_p = testOutliers(sim_resid, plot = FALSE)$p.value
-    )
-  })
-}
+  df_pair <- df_cvd_and_risk_factors %>%
+    select(all_of(c(outcome, pred_name, fixed_effects))) %>%
+    drop_na()
+  
+  model <- glm(
+    as.formula(paste(outcome, "~", pred_name, "+", paste(fixed_effects, collapse = " + "))),
+    data = df_pair, family = Gamma(link = "log")
+  )
+  
+  sim_resid <- simulateResiduals(model, n = 1000, plot = FALSE)
+  
+  tibble(
+    outcome = outcome,
+    predictor = pred_name,
+    n = nrow(df_pair),
+    uniformity_p = testUniformity(sim_resid, plot = FALSE)$p.value,
+    dispersion_p = testDispersion(sim_resid, plot = FALSE)$p.value,
+    dispersion_stat = testDispersion(sim_resid, plot = FALSE)$statistic,
+    outlier_p = testOutliers(sim_resid, plot = FALSE)$p.value
+  )
+})
 
-dharma_results <- test_dharma_per_outcome()
-
-print("DHARMa Diagnostics by Outcome:")
+cat("\nDHARMa Diagnostics by Outcome:\n")
 print(dharma_results)
 
-# ─── 3. Combined Summary Table ───────────────────────────────────────────────
-
+# ─── 13. Combined Diagnostics Summary ────────────────────────────────────────
 diagnostics_summary <- deviance_summary %>%
   left_join(
     dharma_results %>% select(outcome, uniformity_p, dispersion_stat, dispersion_p, outlier_p),
     by = "outcome"
   ) %>%
   mutate(
-    outcome_label = case_when(
-      outcome == "QRISK3_risk" ~ "QRISK3",
-      outcome == "SCORE2_score" ~ "SCORE2",
-      outcome == "ascvd_10y" ~ "ASCVD",
-      outcome == "frs_10y" ~ "Framingham",
-      outcome == "mean_risk" ~ "Composite"
-    )
+    outcome_label = rename_outcomes(outcome)
   ) %>%
-  select(outcome_label, n_models, median_dev_ratio, 
+  select(outcome_label, n_models, median_dev_ratio,
          uniformity_p, dispersion_stat, dispersion_p, outlier_p)
 
-print("Combined Model Diagnostics:")
+cat("\nCombined Model Diagnostics:\n")
 print(diagnostics_summary)
 
-# Save results
 write_csv(deviance_summary, "deviance_summary.csv")
 write_csv(dharma_results, "dharma_diagnostics.csv")
 write_csv(diagnostics_summary, "combined_diagnostics_summary.csv")
 
+saveRDS(deviance_all,         file.path(incremental_dir, "deviance_all.rds"))
+saveRDS(dharma_results,       file.path(incremental_dir, "dharma_results.rds"))
+saveRDS(diagnostics_summary,  file.path(incremental_dir, "diagnostics_summary.rds"))
 
 
-##################################################################################
-##################################################################################
-# 7. Investigate why a high Hear Rate is associated with low CVD risk (thats wrong)
-# 7.1 is bp treatment responsible 
-df_hypertension_treatment <- read_excel("../QRISK3_data.xlsx",sheet = "bp_medication") %>%
-  mutate(Sample_ID = str_replace_all(Sample_ID, "-", "_"))
+################################################################################
+# SENSITIVITY ANALYSES
+################################################################################
 
-# For z_Heart.Rate from df_cvd_scores_and_risk_factors
-map_dfr(outcomes, function(outcome) {
-  df_test <- df_cvd_scores_and_risk_factors %>%
-    left_join(df_hypertension_treatment %>% select(Sample_ID, blood_pressure_treatment), 
-              by = "Sample_ID") %>%
-    select(all_of(outcome), z_Heart.Rate, blood_pressure_treatment, 
-           Statins, Supplements, Gender, Country) %>%
-    drop_na()
+# ─── 14. Build Master Dataframe for Sensitivity Analyses ─────────────────────
+# Reload df_risk_factors without the column exclusions (need z_Age etc.)
+df_risk_factors_full <- readRDS("df_risk_factor_predictors.rds") %>% arrange(Sample_ID)
+
+df_master <- df_all_cvd_risk_scores %>%
+  full_join(df_risk_factors_full, by = "Sample_ID") %>%
+  full_join(df_lipidomics_predictors %>% select(Sample_ID, Statins, Supplements, starts_with("z_")),
+            by = "Sample_ID") %>%
+  full_join(df_REDcap_demographics %>% select(Sample_ID, starts_with("z_"), where(is.factor), -recruitment_site),
+            by = "Sample_ID") %>%
+  full_join(df_body_composition, by = "Sample_ID") %>%
+  full_join(df_urine_nmr_data, by = "Sample_ID") %>%
+  full_join(df_hypertension_treatment %>% select(Sample_ID, blood_pressure_treatment),
+            by = "Sample_ID") %>%
+  full_join(df_qrisk3_input %>% select(Sample_ID, systolic, z_systolic),
+            by = "Sample_ID")
+
+base_fixed <- c("Statins", "Supplements", "Gender", "Country")
+
+# ─── 15. Sensitivity GLM Function ────────────────────────────────────────────
+run_sensitivity_glm <- function(data, outcomes, base_fixed,
+                                predictor_spec, extra_fixed,
+                                analysis_label) {
+  fixed_base_part  <- paste(base_fixed, collapse = " + ")
+  fixed_extra_part <- paste(c(base_fixed, extra_fixed), collapse = " + ")
   
-  # Model WITHOUT medication adjustment
-  model_no_med <- glm(as.formula(paste(outcome, "~ z_Heart.Rate + Statins + Supplements + Gender + Country")),
-                      data = df_test, family = Gamma(link = "log"))
+  var       <- predictor_spec$var
+  var_type  <- predictor_spec$type
+  term_lab  <- predictor_spec$term_label
   
-  # Model WITH medication adjustment
-  model_with_med <- glm(as.formula(paste(outcome, "~ z_Heart.Rate + blood_pressure_treatment + Statins + Supplements + Gender + Country")),
-                        data = df_test, family = Gamma(link = "log"))
-  
-  tibble(
-    outcome = outcome,
-    HR_coef_no_med = coef(model_no_med)["z_Heart.Rate"],
-    HR_coef_with_med = coef(model_with_med)["z_Heart.Rate"],
-    HR_p_no_med = summary(model_no_med)$coefficients["z_Heart.Rate", "Pr(>|t|)"], # i previously removed Heart Rate so code will stop running here..
-    HR_p_with_med = summary(model_with_med)$coefficients["z_Heart.Rate", "Pr(>|t|)"]
+  map_dfr(outcomes, function(outcome) {
+    cols_needed <- unique(c(outcome, var, base_fixed, extra_fixed))
+    df_pair <- data %>% select(all_of(cols_needed)) %>% drop_na()
+    
+    if (nrow(df_pair) < 10) return(tibble())
+    for (fe in c(base_fixed, extra_fixed)) {
+      if (is.factor(df_pair[[fe]]) || is.character(df_pair[[fe]])) {
+        if (n_distinct(df_pair[[fe]]) < 2) return(tibble())
+      }
+    }
+    
+    m_base <- glm(as.formula(paste(outcome, "~", var, "+", fixed_base_part)),
+                  data = df_pair, family = Gamma(link = "log"))
+    m_adj  <- glm(as.formula(paste(outcome, "~", var, "+", fixed_extra_part)),
+                  data = df_pair, family = Gamma(link = "log"))
+    
+    if (var_type == "numeric") {
+      t_base <- tidy(m_base, conf.int = TRUE, exponentiate = TRUE) %>% filter(term == var)
+      t_adj  <- tidy(m_adj,  conf.int = TRUE, exponentiate = TRUE) %>% filter(term == var)
+    } else {
+      t_base <- tidy(m_base, conf.int = TRUE, exponentiate = TRUE) %>% filter(str_starts(term, var))
+      t_adj  <- tidy(m_adj,  conf.int = TRUE, exponentiate = TRUE) %>% filter(str_starts(term, var))
+    }
+    
+    if (nrow(t_base) == 0 || nrow(t_adj) == 0) return(tibble())
+    
+    bind_cols(
+      t_base %>%
+        transmute(term, predictor_label = term_lab, outcome = outcome, n = nrow(df_pair),
+                  RR_base = estimate, CI_low_base = conf.low, CI_high_base = conf.high, p_base = p.value),
+      t_adj %>%
+        transmute(RR_adj = estimate, CI_low_adj = conf.low, CI_high_adj = conf.high, p_adj = p.value)
+    ) %>%
+      mutate(
+        delta_RR = RR_adj - RR_base,
+        pct_change_RR = ((RR_adj - RR_base) / (RR_base - 1)) * 100,
+        direction_base = if_else(RR_base > 1, "↑", "↓"),
+        direction_adj  = if_else(RR_adj > 1, "↑", "↓"),
+        direction_changed = direction_base != direction_adj,
+        analysis = analysis_label
+      )
+  })
+}
+
+format_sensitivity_table <- function(results) {
+  results %>%
+    mutate(
+      outcome_label = rename_outcomes(outcome),
+      RR_CI_base = sprintf("%.3f (%.3f–%.3f)", RR_base, CI_low_base, CI_high_base),
+      RR_CI_adj  = sprintf("%.3f (%.3f–%.3f)", RR_adj, CI_low_adj, CI_high_adj),
+      p_base_fmt = ifelse(p_base < 0.001, sprintf("%.2e", p_base), sprintf("%.4f", p_base)),
+      p_adj_fmt  = ifelse(p_adj < 0.001, sprintf("%.2e", p_adj), sprintf("%.4f", p_adj)),
+      delta_RR_fmt = sprintf("%+.4f", delta_RR),
+      direction_change = if_else(direction_changed, "YES", "")
+    ) %>%
+    select(analysis, predictor_label, outcome_label, n,
+           RR_CI_base, p_base_fmt, RR_CI_adj, p_adj_fmt,
+           delta_RR_fmt, direction_change)
+}
+
+# ─── 16. Run Sensitivity Analyses ────────────────────────────────────────────
+
+# A1: Add Age
+sens_hr_age <- run_sensitivity_glm(
+  df_master, outcomes, base_fixed,
+  list(var = "z_mean_hrt", type = "numeric", term_label = "Mean Heart Rate"),
+  "z_Age", "+ Age"
+)
+
+sens_naps_age <- run_sensitivity_glm(
+  df_master, outcomes, base_fixed,
+  list(var = "naps_during_day", type = "factor", term_label = "Daytime Naps (yes vs no)"),
+  "z_Age", "+ Age"
+)
+
+sens_retired_age <- run_sensitivity_glm(
+  df_master, outcomes, base_fixed,
+  list(var = "Employment_Status", type = "factor", term_label = "Employment Status"),
+  "z_Age", "+ Age"
+)
+
+results_age <- bind_rows(sens_hr_age, sens_naps_age, sens_retired_age)
+
+cat("\n═══ A1: Effect of adding AGE as fixed effect ═══\n")
+print(format_sensitivity_table(results_age), n = Inf, width = Inf)
+
+# A2: Add BP Medication (Heart Rate only)
+sens_hr_bpmed <- run_sensitivity_glm(
+  df_master, outcomes, base_fixed,
+  list(var = "z_mean_hrt", type = "numeric", term_label = "Mean Heart Rate"),
+  "blood_pressure_treatment", "+ BP Medication"
+)
+
+cat("\n═══ A2: Effect of adding BP MEDICATION ═══\n")
+print(format_sensitivity_table(sens_hr_bpmed), n = Inf, width = Inf)
+
+# A3: Body composition / BP adjustments (Heart Rate)
+body_comp_adjustments <- list(
+  list(extra = "z_smi__skeletal_muscle_index_",                       label = "+ Muscle Index"),
+  list(extra = "z_svr_skeletal_muscle_mass_visceral_fat_area_ratio_", label = "+ Muscle/Fat Ratio"),
+  list(extra = "z_vfa__visceral_fat_area_",                           label = "+ Visceral Fat"),
+  list(extra = "z_whtr_waist_height_ratio_",                          label = "+ Waist-to-Height Ratio"),
+  list(extra = "z_systolic",                                          label = "+ Systolic BP")
+)
+
+results_bodycomp_hr <- map_dfr(body_comp_adjustments, function(adj) {
+  run_sensitivity_glm(
+    df_master, outcomes, base_fixed,
+    list(var = "z_mean_hrt", type = "numeric", term_label = "Mean Heart Rate"),
+    adj$extra, adj$label
   )
 })
 
+cat("\n═══ A3: Body composition / BP adjustments (Heart Rate) ═══\n")
+print(format_sensitivity_table(results_bodycomp_hr), n = Inf, width = Inf)
 
-# plotting bp treatment vs hear rate
-plot_data <- df_cvd_scores_and_risk_factors %>%
-  left_join(df_hypertension_treatment %>% select(Sample_ID, blood_pressure_treatment), 
-            by = "Sample_ID") %>%
-  drop_na(blood_pressure_treatment, Heart.Rate) %>%
-  mutate(blood_pressure_treatment = factor(blood_pressure_treatment, levels = c("No", "Yes")))
+# A4: Visceral Fat — Heart Rate AND Trigonelline
+sens_trigonelline_vfat <- run_sensitivity_glm(
+  df_master, outcomes, base_fixed,
+  list(var = "z_Trigonelline", type = "numeric", term_label = "Trigonelline"),
+  "z_vfa__visceral_fat_area_", "+ Visceral Fat"
+)
 
-# Get stats
-stats <- plot_data %>%
-  group_by(blood_pressure_treatment) %>%
-  summarise(n = n(), mean = mean(Heart.Rate))
+cat("\n═══ A4: Visceral Fat adjustment — HR and Trigonelline ═══\n")
+print(format_sensitivity_table(
+  bind_rows(results_bodycomp_hr %>% filter(analysis == "+ Visceral Fat"), sens_trigonelline_vfat)
+), n = Inf, width = Inf)
 
-# Student's t-test (equal variances assumed)
-tt <- t.test(Heart.Rate ~ blood_pressure_treatment, data = plot_data, var.equal = TRUE)
+# Save all sensitivity results
+all_sensitivity <- bind_rows(results_age, sens_hr_bpmed, results_bodycomp_hr, sens_trigonelline_vfat)
+write_csv(format_sensitivity_table(all_sensitivity), "sensitivity_analysis_results.csv")
+cat("\nSaved: sensitivity_analysis_results.csv\n")
 
-ggplot(plot_data, aes(x = blood_pressure_treatment, y = Heart.Rate)) +
-  geom_boxplot(fill = "steelblue", alpha = 0.6, outlier.shape = NA) +
-  geom_jitter(width = 0.2, alpha = 0.4, size = 1.2) +
-  stat_summary(fun = mean, geom = "point", shape = 18, size = 3, color = "red") +
-  annotate("text", x = 1.5, y = max(plot_data$Heart.Rate) * 1.05,
-           label = paste0("Student's t-test: p = ", signif(tt$p.value, 3))) +
-  scale_x_discrete(labels = paste0(c("No", "Yes"), "\n(n = ", stats$n, ")")) +
-  labs(x = "Blood pressure treatment", y = "Mean heart rate") +
-  theme_minimal()
 
-# 7.2 is fittness responsible?
+################################################################################
+# ASSOCIATION PLOTS
+################################################################################
+
+# ─── 17. Plot Helpers ────────────────────────────────────────────────────────
+theme_assoc <- theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 10),
+    axis.title = element_text(size = 11),
+    axis.text = element_text(size = 10),
+    legend.position = "none"
+  )
+
+plot_scatter <- function(data, x_var, y_var, x_label, y_label, title) {
+  df_plot <- data %>% select(all_of(c(x_var, y_var))) %>% drop_na()
+  names(df_plot) <- c("x", "y")
+  
+  cor_test <- cor.test(df_plot$x, df_plot$y, method = "pearson")
+  r <- cor_test$estimate
+  p <- cor_test$p.value
+  p_label <- if (p < 0.001) sprintf("r = %.2f, p < 0.001", r) else sprintf("r = %.2f, p = %.3f", r, p)
+  
+  ggplot(df_plot, aes(x = x, y = y)) +
+    geom_point(alpha = 0.4, size = 1.5, colour = "steelblue") +
+    geom_smooth(method = "lm", se = TRUE, colour = "#D55E00", linewidth = 0.8) +
+    annotate("text", x = -Inf, y = Inf, label = p_label,
+             hjust = -0.05, vjust = 1.5, size = 3.5, fontface = "italic") +
+    labs(x = x_label, y = y_label, title = title) +
+    theme_assoc
+}
+
+plot_boxplot <- function(data, x_var, y_var, x_label, y_label, title) {
+  df_plot <- data %>% select(all_of(c(x_var, y_var))) %>% drop_na()
+  names(df_plot) <- c("x", "y")
+  df_plot$x <- factor(df_plot$x)
+  
+  n_groups <- n_distinct(df_plot$x)
+  
+  if (n_groups == 2) {
+    test <- t.test(y ~ x, data = df_plot, var.equal = TRUE)
+    test_label <- sprintf("Student's t-test p = %s",
+                          if (test$p.value < 0.001) sprintf("%.2e", test$p.value) else sprintf("%.3f", test$p.value))
+  } else {
+    test <- summary(aov(y ~ x, data = df_plot))
+    p_val <- test[[1]][["Pr(>F)"]][1]
+    test_label <- sprintf("One-way ANOVA p = %s",
+                          if (p_val < 0.001) sprintf("%.2e", p_val) else sprintf("%.3f", p_val))
+  }
+  
+  n_per_group <- df_plot %>% count(x)
+  label_map <- setNames(paste0(n_per_group$x, "\n(n=", n_per_group$n, ")"), n_per_group$x)
+  df_plot$x_label <- factor(label_map[as.character(df_plot$x)], levels = label_map)
+  
+  ggplot(df_plot, aes(x = x_label, y = y)) +
+    geom_boxplot(fill = "steelblue", alpha = 0.5, outlier.shape = NA) +
+    geom_jitter(width = 0.15, alpha = 0.3, size = 1) +
+    stat_summary(fun = mean, geom = "point", shape = 18, size = 3, colour = "red") +
+    annotate("text", x = -Inf, y = Inf, label = test_label,
+             hjust = -0.05, vjust = 1.5, size = 3.5, fontface = "italic") +
+    labs(x = x_label, y = y_label, title = title) +
+    theme_assoc
+}
+
+# ─── 18. Heart Rate Association Panel (2×4) ──────────────────────────────────
+combined_hr <- (
+  plot_boxplot(df_master, "blood_pressure_treatment", "mean_hrt",
+               "BP Medication", "Mean Heart Rate (bpm)", "Heart Rate vs BP Medication") |
+    plot_boxplot(df_master, "Gender", "mean_hrt",
+                 "Sex", "Mean Heart Rate (bpm)", "Heart Rate vs Sex") |
+    plot_scatter(df_master, "Age", "mean_hrt",
+                 "Age (years)", "Mean Heart Rate (bpm)", "Heart Rate vs Age") |
+    plot_scatter(df_master, "systolic", "mean_hrt",
+                 "Systolic BP (mmHg)", "Mean Heart Rate (bpm)", "Heart Rate vs Systolic BP")
+) / (
+  plot_scatter(df_master, "smi__skeletal_muscle_index_", "mean_hrt",
+               "Skeletal Muscle Index", "Mean Heart Rate (bpm)", "Heart Rate vs Muscle Index") |
+    plot_scatter(df_master, "svr_skeletal_muscle_mass_visceral_fat_area_ratio_", "mean_hrt",
+                 "Muscle/Visceral Fat Ratio", "Mean Heart Rate (bpm)", "Heart Rate vs Muscle/Fat Ratio") |
+    plot_scatter(df_master, "vfa__visceral_fat_area_", "mean_hrt",
+                 "Visceral Fat Area", "Mean Heart Rate (bpm)", "Heart Rate vs Visceral Fat") |
+    plot_scatter(df_master, "whtr_waist_height_ratio_", "mean_hrt",
+                 "Waist-to-Height Ratio", "Mean Heart Rate (bpm)", "Heart Rate vs Waist-to-Height Ratio")
+) +
+  plot_annotation(
+    title = "Associations with Mean Heart Rate",
+    subtitle = "Boxplots: Student's t-test (red diamond = mean) | Scatter: Pearson correlation with linear fit",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold"),
+      plot.subtitle = element_text(size = 12)
+    )
+  )
+
+ggsave("heart_rate_associations_panel.png", combined_hr, width = 18, height = 10, dpi = 300)
+
+# ─── 19. Age vs Naps and Employment ──────────────────────────────────────────
+combined_age <- (
+  plot_boxplot(df_master, "naps_during_day", "Age",
+               "Daytime Naps", "Age (years)", "Age vs Daytime Naps") |
+    plot_boxplot(df_master, "Employment_Status", "Age",
+                 "Employment Status", "Age (years)", "Age vs Employment Status")
+) +
+  plot_annotation(
+    title = "Age by Lifestyle / Sociodemographic Factors",
+    subtitle = "Student's t-test (2 groups) or One-way ANOVA (>2 groups) | Red diamond = mean",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold"),
+      plot.subtitle = element_text(size = 12)
+    )
+  )
+
+ggsave("age_naps_employment_panel.png", combined_age, width = 14, height = 6, dpi = 300)
+
+cat("\nAll outputs saved.\n")
