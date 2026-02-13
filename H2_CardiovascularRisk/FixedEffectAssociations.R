@@ -9,6 +9,8 @@ library(patchwork)
 library(flextable)
 library(DHARMa)
 library(readxl)
+library(ggplot2)
+
 
 set.seed(42)
 
@@ -235,143 +237,33 @@ rename_predictor_sets <- function(predictor_set) {
   )
 }
 
-# ─── 8. Figure 1: FDR-Significant Heatmap ────────────────────────────────────
+# ─── 8.0 Combined Figure: FDR-Significant and Nominal significant Heatmap ────
+# ── Data Preparation ─────────────────────────────────────────────────────────
+
 heatmap_data <- all_results_glm %>%
   filter(!is.na(estimate)) %>%
   mutate(
-    log_effect     = log(estimate),
-    is_significant = p.adjusted < 0.05,
-    outcome        = rename_outcomes(outcome),
-    predictor_set  = rename_predictor_sets(predictor_set),
-    term_plot_clean = rename_predictors(term_plot),
-    is_categorical = grepl("Lifestyle", predictor_set)
-  )
-
-predictors_with_sig <- heatmap_data %>%
-  filter(is_significant) %>%
-  pull(term_plot_clean) %>%
-  unique()
-
-heatmap_data_filtered <- heatmap_data %>% filter(term_plot_clean %in% predictors_with_sig)
-heatmap_continuous    <- heatmap_data_filtered %>% filter(!is_categorical)
-heatmap_categorical   <- heatmap_data_filtered %>% filter(is_categorical)
-
-# Order by number of significant associations, then effect size
-term_order_continuous <- heatmap_continuous %>%
-  filter(is_significant) %>%
-  group_by(term_plot_clean, predictor_set) %>%
-  summarise(n_sig = n(), mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
-  arrange(predictor_set, desc(n_sig), desc(mean_effect)) %>%
-  pull(term_plot_clean)
-
-term_order_categorical <- heatmap_categorical %>%
-  filter(is_significant) %>%
-  group_by(term_plot_clean) %>%
-  summarise(n_sig = n(), mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
-  arrange(desc(n_sig), desc(mean_effect)) %>%
-  pull(term_plot_clean)
-
-# Continuous panel
-max_abs_cont <- max(abs(heatmap_continuous$log_effect))
-
-p_continuous <- ggplot(heatmap_continuous,
-                       aes(x = outcome,
-                           y = factor(term_plot_clean, levels = rev(term_order_continuous)),
-                           fill = log_effect)) +
-  geom_tile(colour = "white", linewidth = 0.5) +
-  geom_text(data = heatmap_continuous %>% filter(is_significant),
-            aes(label = "*"), size = 8, vjust = 0.75, colour = "black") +
-  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
-  scale_fill_gradient2(
-    low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
-    name = "log(Rate Ratio)",
-    limits = c(-max_abs_cont, max_abs_cont),
-    breaks = seq(-max_abs_cont, max_abs_cont, length.out = 5),
-    labels = function(x) sprintf("%.2f", x)
-  ) +
-  labs(x = NULL, y = "Continuous Predictors") +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text.x = element_blank(), axis.ticks.x = element_blank(),
-    axis.text.y = element_text(size = 13),
-    axis.title.y = element_text(size = 11, face = "bold"),
-    strip.text.y = element_text(size = 12, face = "bold", angle = 0, lineheight = 0.85),
-    legend.title = element_text(size = 13), legend.text = element_text(size = 12),
-    legend.position = "right", panel.grid = element_blank(),
-    plot.margin = margin(5, 5, 0, 5), panel.spacing = unit(0.5, "lines")
-  )
-
-# Categorical panel
-max_abs_cat <- max(abs(heatmap_categorical$log_effect))
-
-p_categorical <- ggplot(heatmap_categorical,
-                        aes(x = outcome,
-                            y = factor(term_plot_clean, levels = rev(term_order_categorical)),
-                            fill = log_effect)) +
-  geom_tile(colour = "white", linewidth = 0.5) +
-  geom_text(data = heatmap_categorical %>% filter(is_significant),
-            aes(label = "*"), size = 8, vjust = 0.75, colour = "black") +
-  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
-  scale_fill_gradient2(
-    low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
-    name = "log(Rate Ratio)",
-    limits = c(-max_abs_cat, max_abs_cat),
-    breaks = seq(-max_abs_cat, max_abs_cat, length.out = 5),
-    labels = function(x) sprintf("%.2f", x)
-  ) +
-  labs(x = "Cardiovascular risk score", y = "Categorical Predictors") +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
-    axis.text.y = element_text(size = 13),
-    axis.title.x = element_text(size = 13, face = "bold"),
-    axis.title.y = element_text(size = 11, face = "bold"),
-    strip.text.y = element_text(size = 12, face = "bold", angle = 0, lineheight = 0.85),
-    legend.title = element_text(size = 13), legend.text = element_text(size = 12),
-    legend.position = "right", panel.grid = element_blank(),
-    plot.margin = margin(0, 5, 5, 5), panel.spacing = unit(0.5, "lines")
-  )
-
-n_cont <- length(unique(heatmap_continuous$term_plot_clean))
-n_cat  <- length(unique(heatmap_categorical$term_plot_clean))
-
-combined_fdr <- p_continuous / p_categorical +
-  plot_layout(heights = c(n_cont, n_cat)) +
-  plot_annotation(
-    title    = "GLM: Associations between biomarkers and CVD risk scores",
-    subtitle = "* indicates FDR-adjusted p < 0.05",
-    caption  = paste0(
-      "Model: outcome ~ predictor + Statins + Supplements + Sex + Country (Gamma GLM, log link)\n",
-      "Multiple testing correction: Benjamini-Hochberg | Separate colour scales for continuous and categorical predictors\n",
-      "Reference levels: Daytime naps (vs no naps), Living with partner/family (vs living alone), Retired/Non-working (vs employed)"
-    ),
-    theme = theme(
-      plot.title = element_text(size = 17, face = "bold"),
-      plot.subtitle = element_text(size = 14),
-      plot.caption = element_text(size = 11, hjust = 0)
-    )
-  )
-
-plot_height <- (n_cont + n_cat) * 0.4 + 3
-ggsave("heatmap_significant_predictors_split.png", combined_fdr,
-       width = 12, height = plot_height, dpi = 300)
-
-# ─── 9. Figure 2: Exploratory Heatmap (≥3 Nominal Significant) ──────────────
-fdr_sig_predictors <- all_results_glm %>%
-  filter(p.adjusted < 0.05) %>%
-  pull(predictor) %>%
-  unique()
-
-heatmap_exploratory <- all_results_glm %>%
-  filter(!predictor %in% fdr_sig_predictors, !is.na(estimate)) %>%
-  mutate(
     log_effect      = log(estimate),
-    is_nominal_sig  = p.value < 0.05,
+    is_fdr_sig      = p.adjusted < 0.05,
+    is_nominal_sig  = p.value < 0.05 & p.adjusted >= 0.05,
     outcome         = rename_outcomes(outcome),
     predictor_set   = rename_predictor_sets(predictor_set),
     term_plot_clean = rename_predictors(term_plot),
     is_categorical  = grepl("Lifestyle", predictor_set)
   )
+
+fdr_sig_terms <- heatmap_data %>%
+  filter(is_fdr_sig) %>%
+  pull(term_plot_clean) %>%
+  unique()
+
+fdr_sig_predictors <- all_results_glm %>%
+  filter(p.adjusted < 0.05) %>%
+  pull(predictor) %>%
+  unique()
+
+heatmap_exploratory <- heatmap_data %>%
+  filter(!predictor %in% fdr_sig_predictors)
 
 preds_3plus <- heatmap_exploratory %>%
   filter(is_nominal_sig) %>%
@@ -380,114 +272,219 @@ preds_3plus <- heatmap_exploratory %>%
   pull(term_plot_clean) %>%
   unique()
 
-heatmap_exp_filtered <- heatmap_exploratory %>% filter(term_plot_clean %in% preds_3plus)
-heatmap_cont_exp <- heatmap_exp_filtered %>% filter(!is_categorical)
-heatmap_cat_exp  <- heatmap_exp_filtered %>% filter(is_categorical)
+panel_a_cat  <- heatmap_data %>% filter(term_plot_clean %in% fdr_sig_terms, is_categorical)
+panel_a_cont <- heatmap_data %>% filter(term_plot_clean %in% fdr_sig_terms, !is_categorical)
+panel_b_cont <- heatmap_exploratory %>% filter(term_plot_clean %in% preds_3plus, !is_categorical)
 
-term_order_cont_exp <- heatmap_cont_exp %>%
+# ── Ordering ─────────────────────────────────────────────────────────────────
+
+order_a_cat <- panel_a_cat %>%
+  filter(is_fdr_sig) %>%
+  group_by(term_plot_clean) %>%
+  summarise(n_sig = n(), mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
+  arrange(desc(n_sig), desc(mean_effect)) %>%
+  pull(term_plot_clean)
+
+order_a_cont <- panel_a_cont %>%
+  filter(is_fdr_sig) %>%
+  group_by(term_plot_clean, predictor_set) %>%
+  summarise(n_sig = n(), mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
+  arrange(predictor_set, desc(n_sig), desc(mean_effect)) %>%
+  pull(term_plot_clean)
+
+order_b_cont <- panel_b_cont %>%
   group_by(term_plot_clean, predictor_set) %>%
   summarise(mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
   arrange(predictor_set, desc(mean_effect)) %>%
   pull(term_plot_clean)
 
-max_abs_cont_exp <- max(abs(heatmap_cont_exp$log_effect))
+# ── Shared Colour Scale Limits ───────────────────────────────────────────────
 
-p_cont_exp <- ggplot(heatmap_cont_exp,
-                     aes(x = outcome,
-                         y = factor(term_plot_clean, levels = rev(term_order_cont_exp)),
-                         fill = log_effect)) +
-  geom_tile(colour = "white", linewidth = 0.5) +
-  geom_point(data = heatmap_cont_exp %>% filter(is_nominal_sig),
-             shape = 21, size = 3, fill = "black", colour = "white", stroke = 0.5) +
-  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
-  scale_fill_gradient2(
-    low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
-    name = "log(Rate Ratio)",
-    limits = c(-max_abs_cont_exp, max_abs_cont_exp),
-    breaks = seq(-max_abs_cont_exp, max_abs_cont_exp, length.out = 5),
-    labels = function(x) sprintf("%.2f", x)
-  ) +
-  labs(x = if (nrow(heatmap_cat_exp) > 0) NULL else "Cardiovascular risk score",
-       y = "Continuous Predictors") +
-  theme_minimal(base_size = 14) +
+all_continuous <- bind_rows(panel_a_cont, panel_b_cont)
+max_abs_cont <- max(abs(all_continuous$log_effect), na.rm = TRUE)
+max_abs_cat  <- max(abs(panel_a_cat$log_effect), na.rm = TRUE)
+
+# ── Shared Theme ─────────────────────────────────────────────────────────────
+
+# Small, consistent legend styling
+legend_theme <- theme(
+  legend.position    = "right",
+  legend.title       = element_text(size = 10),
+  legend.text        = element_text(size = 9),
+  legend.key.height  = unit(0.6, "cm"),
+  legend.key.width   = unit(0.4, "cm"),
+  legend.margin      = margin(0, 0, 0, 0),
+  legend.box.margin  = margin(0, 0, 0, 0)
+)
+
+theme_heatmap <- theme_minimal(base_size = 14) +
   theme(
-    axis.text.x = if (nrow(heatmap_cat_exp) > 0) element_blank() else element_text(size = 14, angle = 45, hjust = 1),
-    axis.ticks.x = if (nrow(heatmap_cat_exp) > 0) element_blank() else element_line(),
-    axis.text.y = element_text(size = 13),
-    axis.title.y = element_text(size = 11, face = "bold"),
-    strip.text.y = element_text(size = 12, face = "bold", angle = 0, lineheight = 0.85),
-    legend.title = element_text(size = 13), legend.text = element_text(size = 12),
-    legend.position = "right", panel.grid = element_blank(),
-    plot.margin = margin(5, 5, 0, 5), panel.spacing = unit(0.5, "lines")
+    axis.text.y      = element_text(size = 13),
+    axis.title.y     = element_text(size = 11, face = "bold"),
+    strip.text.y     = element_text(size = 12, face = "bold", angle = 0, lineheight = 0.85),
+    panel.grid       = element_blank(),
+    panel.spacing    = unit(0.5, "lines")
+  ) +
+  legend_theme
+
+fill_continuous <- scale_fill_gradient2(
+  low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
+  name = "log(Rate Ratio)",
+  limits = c(-max_abs_cont, max_abs_cont),
+  breaks = seq(-max_abs_cont, max_abs_cont, length.out = 5),
+  labels = function(x) sprintf("%.2f", x)
+)
+
+fill_categorical <- scale_fill_gradient2(
+  low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
+  name = "log(Rate Ratio)",
+  limits = c(-max_abs_cat, max_abs_cat),
+  breaks = seq(-max_abs_cat, max_abs_cat, length.out = 5),
+  labels = function(x) sprintf("%.2f", x)
+)
+
+# ── Title labels ─────────────────────────────────────────────────────────────
+
+title_a <- wrap_elements(
+  full = grid::textGrob(
+    label = expression(bold("A) Significant Associations After Multiple Testing Correction (") * bold(italic(p)[adj]) * bold(" < 0.05, *)")),
+    x = 0, hjust = 0,
+    gp = grid::gpar(fontsize = 14)
+  )
+)
+
+title_b <- wrap_elements(
+  full = grid::textGrob(
+    label = expression(bold("B) Exploratory Associations (nominal ") * bold(italic(p)) * bold(" < 0.05, ● ; ≥3 CVD scores)")),
+    x = 0, hjust = 0,
+    gp = grid::gpar(fontsize = 14)
+  )
+)
+
+# ── Panel A: Categorical ────────────────────────────────────────────────────
+
+p_a_cat <- ggplot(panel_a_cat,
+                  aes(x = outcome,
+                      y = factor(term_plot_clean, levels = rev(order_a_cat)),
+                      fill = log_effect)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_text(data = panel_a_cat %>% filter(is_fdr_sig),
+            aes(label = "*"), size = 8, vjust = 0.75, colour = "black") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  fill_categorical +
+  labs(x = NULL, y = "Categorical Predictors") +
+  theme_heatmap +
+  theme(
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin  = margin(2, 5, 0, 5)
   )
 
-if (nrow(heatmap_cat_exp) > 0) {
-  term_order_cat_exp <- heatmap_cat_exp %>%
-    group_by(term_plot_clean) %>%
-    summarise(mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
-    arrange(desc(mean_effect)) %>%
-    pull(term_plot_clean)
-  
-  max_abs_cat_exp <- max(abs(heatmap_cat_exp$log_effect))
-  
-  p_cat_exp <- ggplot(heatmap_cat_exp,
-                      aes(x = outcome,
-                          y = factor(term_plot_clean, levels = rev(term_order_cat_exp)),
-                          fill = log_effect)) +
-    geom_tile(colour = "white", linewidth = 0.5) +
-    geom_point(data = heatmap_cat_exp %>% filter(is_nominal_sig),
-               shape = 21, size = 3, fill = "black", colour = "white", stroke = 0.5) +
-    facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
-    scale_fill_gradient2(
-      low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
-      name = "log(Rate Ratio)",
-      limits = c(-max_abs_cat_exp, max_abs_cat_exp),
-      breaks = seq(-max_abs_cat_exp, max_abs_cat_exp, length.out = 5),
-      labels = function(x) sprintf("%.2f", x)
-    ) +
-    labs(x = "Cardiovascular risk score", y = "Categorical Predictors") +
-    theme_minimal(base_size = 14) +
-    theme(
-      axis.text.x = element_text(size = 14, angle = 45, hjust = 1),
-      axis.text.y = element_text(size = 13),
-      axis.title.x = element_text(size = 13, face = "bold"),
-      axis.title.y = element_text(size = 11, face = "bold"),
-      strip.text.y = element_text(size = 12, face = "bold", angle = 0, lineheight = 0.85),
-      legend.title = element_text(size = 13), legend.text = element_text(size = 12),
-      legend.position = "right", panel.grid = element_blank(),
-      plot.margin = margin(0, 5, 5, 5), panel.spacing = unit(0.5, "lines")
-    )
-  
-  n_cont_exp <- length(unique(heatmap_cont_exp$term_plot_clean))
-  n_cat_exp  <- length(unique(heatmap_cat_exp$term_plot_clean))
-  
-  combined_exploratory <- p_cont_exp / p_cat_exp +
-    plot_layout(heights = c(n_cont_exp, n_cat_exp))
-  
-  plot_height_exp <- (n_cont_exp + n_cat_exp) * 0.4 + 3
-} else {
-  combined_exploratory <- p_cont_exp
-  n_cont_exp <- length(unique(heatmap_cont_exp$term_plot_clean))
-  plot_height_exp <- n_cont_exp * 0.4 + 3
-}
+# ── Panel A: Continuous ─────────────────────────────────────────────────────
 
-combined_exploratory <- combined_exploratory +
+p_a_cont <- ggplot(panel_a_cont,
+                   aes(x = outcome,
+                       y = factor(term_plot_clean, levels = rev(order_a_cont)),
+                       fill = log_effect)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_text(data = panel_a_cont %>% filter(is_fdr_sig),
+            aes(label = "*"), size = 8, vjust = 0.75, colour = "black") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  fill_continuous +
+  labs(x = NULL, y = "Continuous Predictors") +
+  theme_heatmap +
+  theme(
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin  = margin(0, 5, 2, 5)
+  )
+
+# ── Panel B: Continuous (exploratory) ────────────────────────────────────────
+
+p_b_cont <- ggplot(panel_b_cont,
+                   aes(x = outcome,
+                       y = factor(term_plot_clean, levels = rev(order_b_cont)),
+                       fill = log_effect)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_point(data = panel_b_cont %>% filter(is_nominal_sig),
+             shape = 21, size = 3, fill = "black", colour = "white", stroke = 0.5) +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
+  fill_continuous +
+  labs(x = "Cardiovascular risk score", y = "Continuous Predictors") +
+  theme_heatmap +
+  theme(
+    axis.text.x  = element_text(size = 14, angle = 45, hjust = 1),
+    axis.title.x = element_text(size = 13, face = "bold"),
+    plot.margin  = margin(2, 5, 5, 5)
+  )
+
+# ── Stack everything ─────────────────────────────────────────────────────────
+
+n_a_cat  <- length(unique(panel_a_cat$term_plot_clean))
+n_a_cont <- length(unique(panel_a_cont$term_plot_clean))
+n_b_cont <- length(unique(panel_b_cont$term_plot_clean))
+
+combined_final <- title_a / p_a_cont / p_a_cat / title_b / p_b_cont +
+  plot_layout(
+    heights = c(1, n_a_cont, n_a_cat, 1, n_b_cont)
+  ) +
   plot_annotation(
-    title    = "GLM: Exploratory Associations",
-    subtitle = "● indicates predictors with ≥3 nominal significant associations (p < 0.05, FDR p > 0.05)",
-    caption  = paste0(
+    caption = paste0(
       "Model: outcome ~ predictor + Statins + Supplements + Sex + Country (Gamma GLM, log link)\n",
-      "Excludes FDR-significant predictors"
+      "Multiple testing correction: Benjamini–Hochberg\n",
+      "Reference levels — Daytime naps: vs no naps | Living with partner/family: vs living alone | ",
+      "Retired/Non-working: vs employed"
     ),
     theme = theme(
-      plot.title = element_text(size = 17, face = "bold"),
-      plot.subtitle = element_text(size = 14),
       plot.caption = element_text(size = 11, hjust = 0)
     )
   )
 
-ggsave("exploratory_heatmap_3plus_scores_split.png", combined_exploratory,
-       width = 12, height = plot_height_exp, dpi = 300)
+# ── Save ─────────────────────────────────────────────────────────────────────
+
+total_rows <- n_a_cat + n_a_cont + n_b_cont
+plot_height <- total_rows * 0.45 + 5
+
+ggsave("combined_glm_heatmap.png", combined_final,
+       width = 13, height = plot_height, dpi = 300)
+
+cat("Saved combined_glm_heatmap.png\n")
+cat(sprintf("Panel A: %d categorical + %d continuous predictors\n", n_a_cat, n_a_cont))
+cat(sprintf("Panel B: %d continuous predictors\n", n_b_cont))
+cat(sprintf("Plot dimensions: 13 x %.1f inches\n", plot_height))
+
+
+# ── 9. Save individual plots (reusing sub-plots from combined figure) ───────────
+
+# Individual FDR-significant plot
+individual_fdr <- title_a / p_a_cont / p_a_cat +
+  plot_layout(heights = c(1, n_a_cont, n_a_cat)) +
+  plot_annotation(
+    caption = paste0(
+      "Model: outcome ~ predictor + Statins + Supplements + Sex + Country (Gamma GLM, log link)\n",
+      "Multiple testing correction: Benjamini–Hochberg\n",
+      "Reference levels — Daytime naps: vs no naps | Living with partner/family: vs living alone | ",
+      "Retired: vs non-working"
+    ),
+    theme = theme(plot.caption = element_text(size = 11, hjust = 0))
+  )
+
+ggsave("heatmap_significant_predictors_split.png", individual_fdr,
+       width = 12, height = (n_a_cont + n_a_cat) * 0.4 + 3, dpi = 300)
+
+# Individual exploratory plot
+individual_exp <- title_b / p_b_cont +
+  plot_layout(heights = c(1, n_b_cont)) +
+  plot_annotation(
+    caption = paste0(
+      "Model: outcome ~ predictor + Statins + Supplements + Sex + Country (Gamma GLM, log link)\n",
+      "Excludes FDR-significant predictors"
+    ),
+    theme = theme(plot.caption = element_text(size = 11, hjust = 0))
+  )
+
+ggsave("exploratory_heatmap_3plus_scores_split.png", individual_exp,
+       width = 12, height = n_b_cont * 0.4 + 3, dpi = 300)
 
 # ─── 10. Supplementary Tables ────────────────────────────────────────────────
 create_wide_supp_table <- function(data, predictor_set_name) {
