@@ -45,16 +45,24 @@ cat(sprintf("Using %d CPU cores for parallel processing\n", CPUS))
 # 1. DATA LOADING
 # ============================================
 
-# Source covariates BEFORE dropping them
 df_fatty_acids_raw_full <- readRDS("df_fatty_acids_predictor_statin_suppl.rds")
 df_risk_factors_raw_full <- readRDS("df_risk_factor_predictors.rds")
 
+df_ascvd_frs_score2_input <- readRDS("ASCVD_SCORE2_Framingham_input.rds") %>%
+  rename(Sample_ID = PatientID)
+
+df_QRISK3_input <- readRDS("QRISK3_calculation_input.rds") %>%
+  rename(Sample_ID = PatientID)
+
+# Source covariates BEFORE dropping them (df_QRISK3_input must be loaded first)
 df_covariates <- df_fatty_acids_raw_full %>%
   select(Sample_ID, Statins, Supplements) %>%
   full_join(df_risk_factors_raw_full %>% select(Sample_ID, Country), by = "Sample_ID") %>%
+  left_join(df_QRISK3_input %>% select(Sample_ID, Sex), by = "Sample_ID") %>%
   distinct(Sample_ID, .keep_all = TRUE)
 
 COVARIATE_COLS <- c("Country", "Statins", "Supplements")
+COVARIATE_COLS_COMMON <- c("Country", "Statins", "Supplements", "Sex")
 cat(sprintf("✓ Covariates table: %d samples\n", nrow(df_covariates)))
 
 df_fatty_acids_ElaNet <- readRDS("df_fatty_acids_predictor_statin_suppl.rds") %>%
@@ -73,7 +81,7 @@ df_body_composition_ElaNet <- readRDS("df_body_composition_metrics.rds") %>%
   filter(!is.na(Sample_ID))
 
 df_REDcap_demographics_ElaNet <- readRDS("df_REDcap_demographics_ElaNet.rds") %>%
-  select(-starts_with("z_"), -QRISK3_risk, -recruitment_site, -any_of(COVARIATE_COLS))
+  select(-starts_with("z_"), -QRISK3_risk, -recruitment_site, -any_of(COVARIATE_COLS_COMMON))
 
 df_risk_factors_ElaNet <- readRDS("df_risk_factor_predictors.rds") %>%
   select(-starts_with("z_"), -QRISK3_risk,
@@ -86,34 +94,44 @@ df_all_cvd_risk_scores_ElaNet <- readRDS("df_all_risk_scores.rds") %>%
   rename(Sample_ID = PatientID) %>%
   select(-SCORE2_strat, -any_of("mean_risk"))
 
-df_ascvd_frs_score2_input <- readRDS("ASCVD_SCORE2_Framingham_input.rds") %>%
-  rename(Sample_ID = PatientID)
-
-df_QRISK3_input <- readRDS("QRISK3_calculation_input.rds") %>%
-  rename(Sample_ID = PatientID)
-
 CVD_scores <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
 
 # ============================================
 # 2. CREATE DATASETS
 # ============================================
 
-attach_covariates <- function(df) {
-  df %>% select(-any_of(COVARIATE_COLS)) %>% left_join(df_covariates, by = "Sample_ID")
+# Helper: attach covariates to a NAMED LIST of data frames
+attach_covariates <- function(datasets_list, covariate_cols = COVARIATE_COLS) {
+  lapply(datasets_list, function(df) {
+    covs_to_add <- df_covariates %>% select(Sample_ID, all_of(covariate_cols))
+    df %>%
+      select(-any_of(covariate_cols)) %>%
+      left_join(covs_to_add, by = "Sample_ID")
+  })
 }
 
+# Helper: attach covariates to a SINGLE data frame
+attach_covariates_single <- function(df, covariate_cols = COVARIATE_COLS) {
+  covs_to_add <- df_covariates %>% select(Sample_ID, all_of(covariate_cols))
+  df %>%
+    select(-any_of(covariate_cols)) %>%
+    left_join(covs_to_add, by = "Sample_ID")
+}
+
+# ---- Build raw data frames (no covariates yet) ----
+
 df_body_comp_raw <- df_body_composition_ElaNet %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>% attach_covariates()
+  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID")
 df_demographics_raw <- df_REDcap_demographics_ElaNet %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>% attach_covariates()
+  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID")
 df_risk_factors_raw <- df_risk_factors_ElaNet %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>% attach_covariates()
+  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID")
 df_lipids_raw <- df_lipidomics_ElaNet %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>% attach_covariates()
+  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID")
 df_fatty_acids_raw <- df_fatty_acids_ElaNet %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>% attach_covariates()
+  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID")
 df_urine_nmr_raw <- df_urine_nmr_ElaNet %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>% attach_covariates()
+  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID")
 
 df_all_data <- df_fatty_acids_ElaNet %>%
   full_join(df_lipidomics_ElaNet, by = "Sample_ID") %>%
@@ -122,7 +140,9 @@ df_all_data <- df_fatty_acids_ElaNet %>%
   full_join(df_risk_factors_ElaNet, by = "Sample_ID") %>%
   full_join(df_REDcap_demographics_ElaNet, by = "Sample_ID") %>%
   full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>%
-  select(where(~!all(is.na(.)))) %>% attach_covariates()
+  select(where(~!all(is.na(.))))
+
+# ---- Assemble into list, then attach COMMON covariates (incl. Sex) ----
 
 datasets_list <- list(
   all_data = df_all_data,
@@ -133,27 +153,33 @@ datasets_list <- list(
   fatty_acids = df_fatty_acids_raw,
   urine_nmr = df_urine_nmr_raw
 )
+datasets_list <- attach_covariates(datasets_list, COVARIATE_COLS_COMMON)
 
-# Score-specific input datasets (no composite)
+# ---- Score-specific input datasets (Sex stays as predictor, not covariate) ----
+
 df_model0_QRISK3 <- df_QRISK3_input %>%
   mutate(townsend = replace_na(townsend, 0)) %>%
   full_join(df_all_cvd_risk_scores_ElaNet %>% select(Sample_ID, QRISK3_risk), by = "Sample_ID") %>%
-  filter(!is.na(QRISK3_risk)) %>% select(-any_of(COVARIATE_COLS)) %>% attach_covariates()
+  filter(!is.na(QRISK3_risk)) %>%
+  attach_covariates_single(COVARIATE_COLS)
 
 df_model0_ascvd <- df_ascvd_frs_score2_input %>%
   select(-Risk.region, -mean_LDL_mg_dl) %>%
   full_join(df_all_cvd_risk_scores_ElaNet %>% select(Sample_ID, ascvd_10y), by = "Sample_ID") %>%
-  filter(!is.na(ascvd_10y)) %>% select(-any_of(COVARIATE_COLS)) %>% attach_covariates()
+  filter(!is.na(ascvd_10y)) %>%
+  attach_covariates_single(COVARIATE_COLS)
 
 df_model0_score2 <- df_ascvd_frs_score2_input %>%
   select(-mean_LDL_mg_dl, -blood_pressure_treatment, -race_ascvd) %>%
   full_join(df_all_cvd_risk_scores_ElaNet %>% select(Sample_ID, SCORE2_score), by = "Sample_ID") %>%
-  filter(!is.na(SCORE2_score)) %>% select(-any_of(COVARIATE_COLS)) %>% attach_covariates()
+  filter(!is.na(SCORE2_score)) %>%
+  attach_covariates_single(COVARIATE_COLS)
 
 df_model0_frs <- df_ascvd_frs_score2_input %>%
   select(-Risk.region, -mean_LDL_mg_dl, -race_ascvd) %>%
   full_join(df_all_cvd_risk_scores_ElaNet %>% select(Sample_ID, frs_10y), by = "Sample_ID") %>%
-  filter(!is.na(frs_10y)) %>% select(-any_of(COVARIATE_COLS)) %>% attach_covariates()
+  filter(!is.na(frs_10y)) %>%
+  attach_covariates_single(COVARIATE_COLS)
 
 score_specific_datasets <- list(
   QRISK3_risk = df_model0_QRISK3,
@@ -162,11 +188,13 @@ score_specific_datasets <- list(
   ascvd_10y = df_model0_ascvd
 )
 
-# Body Composition + Height/Weight
+# ---- Body Composition + Height/Weight ----
+
 height_weight_vars <- df_QRISK3_input %>% select(Sample_ID, Height_cm, Weight_kg)
 df_body_comp_extended <- df_body_composition_ElaNet %>%
   full_join(height_weight_vars, by = "Sample_ID") %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>% attach_covariates()
+  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>%
+  attach_covariates_single(COVARIATE_COLS_COMMON)
 
 scores_without_ht_wt <- c("SCORE2_score", "ascvd_10y", "frs_10y")
 
@@ -276,6 +304,7 @@ build_score_plus_block <- function(score, block_name, score_specific_datasets, d
 # ============================================
 
 get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
+                                      covariate_cols = COVARIATE_COLS,
                                       alpha_grid = seq(0, 1, by = 0.1), nfolds = 10, seed = 42) {
   set.seed(seed)
   n <- length(y); y_mean_global <- mean(y)
@@ -296,7 +325,7 @@ get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
     y_train <- y[idx_train]
     y_test <- y[idx_test]
     
-    preprocessed <- preprocess_train_test(df_train, df_test, exclude_cols)
+    preprocessed <- preprocess_train_test(df_train, df_test, exclude_cols, covariate_cols)
     X_train <- preprocessed$X_train
     X_test <- preprocessed$X_test
     pen_factor <- ifelse(preprocessed$is_covariate, 0, 1)
@@ -342,6 +371,7 @@ get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
 
 run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_name,
                                   exclude_cols = "Sample_ID",
+                                  covariate_cols = COVARIATE_COLS,
                                   alpha_grid = seq(0, 1, by = 0.1),
                                   nfolds = 10, n_permutations = 100,
                                   col_miss_thresh = 0.4, row_miss_thresh = 0.8,
@@ -356,11 +386,11 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   # Missingness filtering — protect covariates from removal
   cat(sprintf("  Filtering by missingness (col >%.0f%%, row >%.0f%%)...\n",
               col_miss_thresh * 100, row_miss_thresh * 100))
-  cols_to_protect <- unique(c(all_exclude, COVARIATE_COLS))
+  cols_to_protect <- unique(c(all_exclude, covariate_cols))
   df_filtered <- filter_by_missingness(df_complete, cols_to_protect, col_miss_thresh, row_miss_thresh)
   
   # Re-attach covariates if they were dropped
-  for (cov in COVARIATE_COLS) {
+  for (cov in covariate_cols) {
     if (!cov %in% names(df_filtered) && cov %in% names(df_complete)) {
       df_filtered[[cov]] <- df_complete[[cov]][match(df_filtered$Sample_ID, df_complete$Sample_ID)]
     }
@@ -375,7 +405,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   }
   
   # ---- PART A: Full-data model (for coefficients) ----
-  preprocessed_full <- preprocess_train_test(df_filtered, df_filtered, all_exclude)
+  preprocessed_full <- preprocess_train_test(df_filtered, df_filtered, all_exclude, covariate_cols)
   X_full <- preprocessed_full$X_train
   n_pred <- ncol(X_full)
   predictor_names <- colnames(X_full)
@@ -431,7 +461,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   
   # ---- PART C: Out-of-fold predictions (Q²_Y) ----
   oof_results <- get_oof_predictions_clean(
-    df_filtered, y, all_exclude, alpha_grid, nfolds, seed + 100
+    df_filtered, y, all_exclude, covariate_cols, alpha_grid, nfolds, seed + 100
   )
   
   y_pred_oof <- oof_results$predictions
@@ -477,7 +507,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   
   # ---- Separate covariate vs penalized coefficients ----
   nonzero_coefs <- coef_vector[coef_vector != 0]
-  is_cov_nz <- grepl(paste0("^(", paste(COVARIATE_COLS, collapse = "|"), ")"), names(nonzero_coefs))
+  is_cov_nz <- grepl(paste0("^(", paste(covariate_cols, collapse = "|"), ")"), names(nonzero_coefs))
   penalized_nonzero <- nonzero_coefs[!is_cov_nz]
   covariate_nonzero <- nonzero_coefs[is_cov_nz]
   
@@ -500,7 +530,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
     n_predictors = n_pred,
     n_penalized_predictors = n_penalized,
     n_covariates = n_covariates_in_model,
-    covariates_used = paste(COVARIATE_COLS, collapse = ", "),
+    covariates_used = paste(covariate_cols, collapse = ", "),
     n_nonzero_coefs = n_nonzero,
     n_nonzero_penalized = length(penalized_nonzero),
     n_nonzero_covariates = length(covariate_nonzero),
@@ -560,6 +590,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
 run_score_specific_models <- function(score_specific_datasets,
                                       alpha_grid = seq(0, 1, by = 0.1),
                                       nfolds = 10, n_permutations = 100,
+                                      covariate_cols = COVARIATE_COLS,
                                       seed = 42,
                                       output_file = "elastic_net_score_specific.qs2") {
   results_list <- list()
@@ -571,7 +602,7 @@ run_score_specific_models <- function(score_specific_datasets,
   cat("==========================================================\n")
   cat("ELASTIC NET (COV-ADJUSTED): SCORE-SPECIFIC DATASETS\n")
   cat(sprintf("Models: %d | Perms: %d | Covariates: %s\n",
-              n_models, n_permutations, paste(COVARIATE_COLS, collapse = ", ")))
+              n_models, n_permutations, paste(covariate_cols, collapse = ", ")))
   cat("==========================================================\n")
   
   for (i in seq_along(score_specific_datasets)) {
@@ -591,7 +622,8 @@ run_score_specific_models <- function(score_specific_datasets,
     tryCatch({
       result <- run_elastic_net_model(
         df_raw = df, outcome_col = cvd_score, cvd_score_name = cvd_score,
-        dataset_name = dataset_name, alpha_grid = alpha_grid,
+        dataset_name = dataset_name, covariate_cols = covariate_cols,
+        alpha_grid = alpha_grid,
         nfolds = nfolds, n_permutations = n_permutations, seed = seed
       )
       results_list[[i]] <- result
@@ -614,6 +646,7 @@ run_score_specific_models <- function(score_specific_datasets,
 run_common_datasets_models <- function(datasets_list, cvd_score_names,
                                        alpha_grid = seq(0, 1, by = 0.1),
                                        nfolds = 10, n_permutations = 100,
+                                       covariate_cols = COVARIATE_COLS_COMMON,
                                        seed = 42,
                                        output_file = "elastic_net_common.qs2") {
   results_list <- list()
@@ -626,7 +659,7 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names,
   cat("==========================================================\n")
   cat("ELASTIC NET (COV-ADJUSTED): COMMON DATASETS × CVD SCORES\n")
   cat(sprintf("Models: %d | Perms: %d | Covariates: %s\n",
-              n_models, n_permutations, paste(COVARIATE_COLS, collapse = ", ")))
+              n_models, n_permutations, paste(covariate_cols, collapse = ", ")))
   cat("==========================================================\n")
   
   for (dataset_name in names(datasets_list)) {
@@ -653,7 +686,8 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names,
       tryCatch({
         result <- run_elastic_net_model(
           df_raw = df, outcome_col = cvd_score, cvd_score_name = cvd_score,
-          dataset_name = dataset_name, alpha_grid = alpha_grid,
+          dataset_name = dataset_name, covariate_cols = covariate_cols,
+          alpha_grid = alpha_grid,
           nfolds = nfolds, n_permutations = n_permutations, seed = seed
         )
         results_list[[counter]] <- result
@@ -678,6 +712,7 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names,
 run_score_specific_plus_blocks_models <- function(score_specific_datasets, datasets_list,
                                                   alpha_grid = seq(0, 1, by = 0.1),
                                                   nfolds = 10, n_permutations = 100,
+                                                  covariate_cols = COVARIATE_COLS,
                                                   seed = 42,
                                                   output_file = "elastic_net_score_plus_blocks.qs2") {
   results_list <- list()
@@ -690,7 +725,7 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
   cat("==========================================================\n")
   cat("ELASTIC NET (COV-ADJUSTED): SCORE-SPECIFIC + PREDICTOR BLOCK\n")
   cat(sprintf("Models: %d | Perms: %d | Covariates: %s\n",
-              n_models, n_permutations, paste(COVARIATE_COLS, collapse = ", ")))
+              n_models, n_permutations, paste(covariate_cols, collapse = ", ")))
   cat("==========================================================\n")
   
   for (cvd_score in names(score_specific_datasets)) {
@@ -715,7 +750,8 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
       tryCatch({
         result <- run_elastic_net_model(
           df_raw = df_combined, outcome_col = cvd_score, cvd_score_name = cvd_score,
-          dataset_name = dataset_name, alpha_grid = alpha_grid,
+          dataset_name = dataset_name, covariate_cols = covariate_cols,
+          alpha_grid = alpha_grid,
           nfolds = nfolds, n_permutations = n_permutations, seed = seed
         )
         results_list[[counter]] <- result
@@ -815,7 +851,7 @@ for (i in seq_along(scores_without_ht_wt)) {
   tryCatch({
     results_body_comp_extended[[i]] <- run_elastic_net_model(
       df_raw = df_model, outcome_col = score, cvd_score_name = score,
-      dataset_name = "body_comp_with_ht_wt",
+      dataset_name = "body_comp_with_ht_wt", covariate_cols = COVARIATE_COLS_COMMON,
       alpha_grid = seq(0, 1, by = 0.1), nfolds = 5, n_permutations = 0, seed = 42
     )
     cat("  ✓ Success\n")
@@ -833,7 +869,7 @@ for (i in seq_along(scores_without_ht_wt)) {
   
   base_df <- score_specific_datasets[[score]]
   body_comp_predictors <- df_body_comp_extended %>%
-    select(-all_of(CVD_scores), -any_of(COVARIATE_COLS))
+    select(-all_of(CVD_scores), -any_of(COVARIATE_COLS_COMMON))
   
   df_combined <- base_df %>%
     left_join(body_comp_predictors, by = "Sample_ID") %>%
@@ -1000,7 +1036,7 @@ dataset_labels_table <- c(
   "all_data" = "All predictors",
   "body_composition" = "Body composition",
   "sociodemographics_lifestyle" = "Sociodemographics & lifestyle",
-  "clinical_risk_factors" = "Clinical Measurements & Supplementary Biomarkers",
+  "clinical_risk_factors" = "Clinical risk factors",
   "lipids" = "Lipids",
   "fatty_acids" = "Fatty acids",
   "urine_nmr" = "Urine NMR",
@@ -1048,8 +1084,8 @@ create_score_specific_table <- function(results_df, table_title) {
     align(j = 1, align = "left", part = "all") %>%
     align(j = 2:6, align = "center", part = "all") %>%
     font(fontname = "Arial", part = "all") %>%
-    fontsize(size = 9, part = "body") %>%
-    fontsize(size = 10, part = "header") %>%
+    flextable::fontsize(size = 9, part = "body") %>%
+    flextable::fontsize(size = 10, part = "header") %>%
     bold(part = "header") %>%
     width(j = 1, width = 1.2) %>%
     width(j = 2, width = 0.8) %>%
@@ -1120,8 +1156,8 @@ create_multi_score_table <- function(results_df, table_title,
     align(j = 1:2, align = "left", part = "all") %>%
     align(j = 3:7, align = "center", part = "all") %>%
     font(fontname = "Arial", part = "all") %>%
-    fontsize(size = 9, part = "body") %>%
-    fontsize(size = 10, part = "header") %>%
+    flextable::fontsize(size = 9, part = "body") %>%
+    flextable::fontsize(size = 10, part = "header") %>%
     bold(part = "header") %>%
     bold(j = 1, part = "body") %>%
     width(j = 1, width = 1.8) %>%
@@ -1217,7 +1253,6 @@ doc <- read_docx() %>%
 
 print(doc, target = save_output("Elastic_Net_All_Tables_CovAdj.docx"))
 cat("\n✓ All tables saved\n")
-
 
 # ============================================
 # 11. VISUALIZE NON-ZERO COEFFICIENTS
@@ -1782,13 +1817,13 @@ calculate_fold_importance <- function(X_train, X_test, y_train, y_test,
 
 
 #' Get non-zero PENALIZED features (excluding covariates)
-get_nonzero_features <- function(results_row) {
+get_nonzero_features <- function(results_row, covariate_cols = COVARIATE_COLS) {
   coefs <- results_row$all_coefficients[[1]]
   feat_names <- results_row$all_predictor_names[[1]]
   if (is.null(coefs) || is.null(feat_names)) return(character())
   
   nonzero_mask <- coefs != 0
-  is_covariate <- grepl(paste0("^(", paste(COVARIATE_COLS, collapse = "|"), ")"), feat_names)
+  is_covariate <- grepl(paste0("^(", paste(covariate_cols, collapse = "|"), ")"), feat_names)
   
   feat_names[nonzero_mask & !is_covariate]
 }
@@ -1816,6 +1851,7 @@ build_model_dataset <- function(cvd_score, dataset_name,
 #' Run permutation importance for a single model with nested CV
 run_permutation_importance <- function(df_raw, outcome_col, exclude_cols,
                                        features_to_test,
+                                       covariate_cols = COVARIATE_COLS,
                                        alpha_grid = seq(0, 1, by = 0.1),
                                        nfolds = 5,
                                        n_permutations = 1000,
@@ -1830,13 +1866,13 @@ run_permutation_importance <- function(df_raw, outcome_col, exclude_cols,
   all_exclude <- unique(c(exclude_cols, outcome_col, CVD_scores))
   
   # Protect covariates from missingness filter
-  cols_to_protect <- unique(c(all_exclude, COVARIATE_COLS))
+  cols_to_protect <- unique(c(all_exclude, covariate_cols))
   df_filtered <- suppressMessages(
     filter_by_missingness(df_complete, cols_to_protect, col_miss_thresh, row_miss_thresh)
   )
   
   # Re-attach covariates if dropped
-  for (cov in COVARIATE_COLS) {
+  for (cov in covariate_cols) {
     if (!cov %in% names(df_filtered) && cov %in% names(df_complete)) {
       df_filtered[[cov]] <- df_complete[[cov]][match(df_filtered$Sample_ID, df_complete$Sample_ID)]
     }
@@ -1864,7 +1900,7 @@ run_permutation_importance <- function(df_raw, outcome_col, exclude_cols,
     y_test <- y[idx_test]
     
     preprocessed <- tryCatch(
-      preprocess_train_test(df_train, df_test, all_exclude),
+      preprocess_train_test(df_train, df_test, all_exclude, covariate_cols),
       error = function(e) { cat(sprintf("Preprocessing failed: %s\n", e$message)); NULL }
     )
     
@@ -1970,6 +2006,7 @@ run_permutation_importance_batch <- function(results_df,
                                              n_permutations = 1000,
                                              nfolds = 5,
                                              n_cores = 1,
+                                             covariate_cols = COVARIATE_COLS,
                                              seed = 42,
                                              models_to_run = NULL) {
   
@@ -1987,7 +2024,7 @@ run_permutation_importance_batch <- function(results_df,
   cat("PERMUTATION FEATURE IMPORTANCE (COV-ADJUSTED, PARALLELIZED)\n")
   cat(sprintf("Models: %d | Perms/feature/fold: %d | Folds: %d | Cores: %d\n",
               n_models, n_permutations, nfolds, n_cores))
-  cat(sprintf("Covariates (unpenalized, not tested): %s\n", paste(COVARIATE_COLS, collapse = ", ")))
+  cat(sprintf("Covariates (unpenalized, not tested): %s\n", paste(covariate_cols, collapse = ", ")))
   cat(sprintf("Incremental saves to: %s/\n", incremental_dir))
   cat("==========================================================\n")
   
@@ -2015,7 +2052,7 @@ run_permutation_importance_batch <- function(results_df,
     
     if (nrow(model_results) == 0) { cat("  ✗ No elastic net results found\n"); next }
     
-    features_to_test <- get_nonzero_features(model_results[1, ])
+    features_to_test <- get_nonzero_features(model_results[1, ], covariate_cols)
     n_nonzero <- length(features_to_test)
     cat(sprintf("  Non-zero penalized features: %d\n", n_nonzero))
     
@@ -2030,7 +2067,8 @@ run_permutation_importance_batch <- function(results_df,
     tryCatch({
       importance_results <- run_permutation_importance(
         df_raw = df_raw, outcome_col = cvd_score, exclude_cols = "Sample_ID",
-        features_to_test = features_to_test, alpha_grid = seq(0, 1, by = 0.1),
+        features_to_test = features_to_test, covariate_cols = covariate_cols,
+        alpha_grid = seq(0, 1, by = 0.1),
         nfolds = nfolds, n_permutations = n_permutations,
         n_cores = n_cores, seed = seed + i * 100000
       )
@@ -2280,7 +2318,6 @@ create_block_importance_plots <- function(importance_results, coefficient_direct
   cat(sprintf("✓ Saved block importance plots\n"))
 }
 
-
 # ============================================
 # 15. EXECUTE PERMUTATION IMPORTANCE
 # ============================================
@@ -2300,7 +2337,8 @@ importance_results_full <- run_permutation_importance_batch(
   results_df = results_score_plus_blocks,
   datasets_list = datasets_list,
   score_specific_datasets = score_specific_datasets,
-  n_permutations = 1000, nfolds = 5, n_cores = CPUS, seed = 42,
+  n_permutations = 1000, nfolds = 5, n_cores = CPUS,
+  covariate_cols = COVARIATE_COLS, seed = 42,
   models_to_run = models_for_full_run
 )
 
@@ -2382,7 +2420,8 @@ importance_results_common <- run_permutation_importance_batch(
   results_df = results_common,
   datasets_list = datasets_list,
   score_specific_datasets = score_specific_datasets,
-  n_permutations = 1000, nfolds = 5, n_cores = CPUS, seed = 42,
+  n_permutations = 1000, nfolds = 5, n_cores = CPUS,
+  covariate_cols = COVARIATE_COLS_COMMON, seed = 42,
   models_to_run = models_common_run
 )
 
@@ -3190,3 +3229,384 @@ result_common <- create_circular_importance_plot(
 )
 
 cat("\n✓ All done\n")
+
+
+# ============================================
+# 21. BAR IMPORTANCE PLOTS — COMMON (BLOCKS-ONLY)
+# ============================================
+# Vertical bars (mean Δ MSE) with SE error bars + fold-level data points.
+# Risk-increasing bars go up, risk-decreasing go down.
+# Bars packed tightly per feature (no gaps for missing scores).
+# Only features with ≥3 non-zero folds shown.
+# Significance stars from BH q-values.
+
+library(ggplot2)
+
+#' Extract per-fold importance data from batch results
+extract_per_fold_data <- function(importance_results) {
+  all_fold_data <- list()
+  for (i in seq_along(importance_results$all_results)) {
+    res <- importance_results$all_results[[i]]
+    if (is.null(res)) next
+    fold_df <- res$per_fold
+    if (is.null(fold_df) || nrow(fold_df) == 0) next
+    fold_df$cvd_score <- res$aggregated$cvd_score[1]
+    fold_df$dataset_name <- res$aggregated$dataset_name[1]
+    all_fold_data[[i]] <- fold_df
+  }
+  bind_rows(all_fold_data)
+}
+
+
+#' Reference level legend for sociodemographics dummy variables
+get_sociodemographic_references <- function() {
+  c(
+    "Living Status" = "ref: Living alone",
+    "Employment Status" = "ref: Not working/Other",
+    "Education Level" = "ref: Level 0 (lowest)",
+    "Marital status" = "ref: Married/In partnership",
+    "Working time" = "ref: Full time",
+    "Annual net salary" = "ref: Category 0 (lowest)",
+    "Naps during day" = "ref: No",
+    "Servings nuts per week" = "ref: < 3",
+    "Wine per week" = "ref: < 7 glasses",
+    "Olive oil given day" = "ref: < 4 tbsp",
+    "Olive oil as main culinary fat" = "ref: No"
+  )
+}
+
+
+#' Create direction-aware bar plot for one dataset block
+create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
+                                      block_name, block_label = NULL,
+                                      cvd_colors = NULL,
+                                      min_nonzero_folds = 3) {
+  
+  if (is.null(cvd_colors)) {
+    cvd_colors <- c(
+      "QRISK3" = "#F8766D", "SCORE2" = "#00BA38",
+      "Framingham" = "#B79F00", "ASCVD" = "#619CFF"
+    )
+  }
+  cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
+  if (is.null(block_label)) block_label <- block_name
+  
+  # Filter to this block, non-zero importance only
+  plot_data <- fold_data %>%
+    filter(dataset_name == block_name, importance > 0)
+  if (nrow(plot_data) == 0) return(NULL)
+  
+  # Join with coefficient directions
+  plot_data <- plot_data %>%
+    left_join(
+      coefficient_df %>% select(cvd_score, dataset_name, feature, direction),
+      by = c("cvd_score", "dataset_name", "feature")
+    ) %>%
+    filter(!is.na(direction), direction != "Zero")
+  if (nrow(plot_data) == 0) return(NULL)
+  
+  # Labels
+  plot_data <- plot_data %>%
+    mutate(
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+      cvd_label = factor(cvd_label, levels = cvd_order)
+    )
+  
+  # Count non-zero folds per feature-score; keep ≥ min_nonzero_folds
+  fold_counts <- plot_data %>%
+    group_by(feature, cvd_label) %>%
+    summarise(n_nonzero = n(), .groups = "drop")
+  
+  valid_combos <- fold_counts %>% filter(n_nonzero >= min_nonzero_folds)
+  n_excluded_combos <- nrow(fold_counts) - nrow(valid_combos)
+  
+  plot_data <- plot_data %>%
+    semi_join(valid_combos, by = c("feature", "cvd_label"))
+  if (nrow(plot_data) == 0) return(NULL)
+  
+  # Summarise: mean ± SE per feature per score
+  summary_data <- plot_data %>%
+    group_by(feature, cvd_label, direction) %>%
+    summarise(
+      mean_imp = mean(importance, na.rm = TRUE),
+      se_imp = sd(importance, na.rm = TRUE) / sqrt(sum(!is.na(importance))),
+      n_folds = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      signed_mean = ifelse(direction == "Risk-Increasing", mean_imp, -mean_imp),
+      ymin = ifelse(direction == "Risk-Increasing",
+                    mean_imp - se_imp, -(mean_imp + se_imp)),
+      ymax = ifelse(direction == "Risk-Increasing",
+                    mean_imp + se_imp, -(mean_imp - se_imp))
+    )
+  
+  # Sign fold-level points
+  plot_data <- plot_data %>%
+    mutate(signed_importance = ifelse(direction == "Risk-Increasing", importance, -importance))
+  
+  # Join significance from aggregated data
+  sig_data <- aggregated_df %>%
+    filter(dataset_name == block_name) %>%
+    mutate(
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+      sig_star = case_when(
+        p_value_bh < 0.001 ~ "***", p_value_bh < 0.01 ~ "**",
+        p_value_bh < 0.05 ~ "*", TRUE ~ ""
+      )
+    ) %>%
+    select(feature, cvd_label, sig_star)
+  
+  summary_data <- summary_data %>%
+    left_join(sig_data, by = c("feature", "cvd_label")) %>%
+    mutate(sig_star = ifelse(is.na(sig_star), "", sig_star))
+  
+  # ---- Feature ordering ----
+  feat_inc <- summary_data %>%
+    filter(direction == "Risk-Increasing") %>%
+    group_by(feature) %>% summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+    arrange(desc(max_imp)) %>% pull(feature)
+  
+  feat_dec <- summary_data %>%
+    filter(direction == "Risk-Decreasing") %>%
+    group_by(feature) %>% summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+    arrange(desc(max_imp)) %>% pull(feature)
+  
+  feat_dec <- setdiff(feat_dec, feat_inc)
+  feature_levels <- c(feat_inc, feat_dec)
+  
+  clean_name <- function(x) gsub("_", " ", gsub("\\.", " ", x))
+  clean_levels <- clean_name(feature_levels)
+  
+  summary_data <- summary_data %>%
+    mutate(feature_clean = factor(clean_name(feature), levels = clean_levels)) %>%
+    filter(feature %in% feature_levels)
+  
+  plot_data <- plot_data %>%
+    mutate(feature_clean = factor(clean_name(feature), levels = clean_levels)) %>%
+    filter(feature %in% feature_levels)
+  
+  n_features <- length(feature_levels)
+  
+  # ---- No-gap positioning ----
+  bar_width <- 0.18
+  gap_between_features <- 0.3
+  
+  position_rows <- list()
+  current_x <- 1
+  feature_centers <- numeric(n_features)
+  
+  for (f_idx in seq_along(feature_levels)) {
+    feat <- feature_levels[f_idx]
+    scores_present <- summary_data %>%
+      filter(feature == feat) %>% arrange(cvd_label) %>%
+      pull(cvd_label) %>% as.character()
+    
+    n_bars <- length(scores_present)
+    if (n_bars == 0) next
+    
+    group_width <- n_bars * bar_width + (n_bars - 1) * 0.02
+    start_x <- current_x - group_width / 2 + bar_width / 2
+    feature_centers[f_idx] <- current_x
+    
+    for (b_idx in seq_along(scores_present)) {
+      x_pos <- start_x + (b_idx - 1) * (bar_width + 0.02)
+      position_rows[[length(position_rows) + 1]] <- tibble(
+        feature = feat, cvd_label = scores_present[b_idx], x_pos = x_pos
+      )
+    }
+    current_x <- current_x + gap_between_features + group_width / 2 + bar_width
+  }
+  
+  positions <- bind_rows(position_rows) %>%
+    mutate(cvd_label = factor(cvd_label, levels = cvd_order))
+  
+  feature_tick_positions <- tibble(
+    feature = feature_levels,
+    feature_clean = factor(clean_levels, levels = clean_levels),
+    x_tick = feature_centers
+  )
+  
+  summary_data <- summary_data %>%
+    left_join(positions, by = c("feature", "cvd_label"))
+  plot_data <- plot_data %>%
+    left_join(positions, by = c("feature", "cvd_label"))
+  
+  # Star positions
+  summary_data <- summary_data %>%
+    mutate(
+      star_y = ifelse(direction == "Risk-Increasing",
+                      ymax + max(abs(summary_data$signed_mean), na.rm = TRUE) * 0.05,
+                      ymin - max(abs(summary_data$signed_mean), na.rm = TRUE) * 0.05)
+    )
+  
+  plot_width <- max(10, 4 + n_features * 0.8)
+  
+  # ---- Build plot ----
+  p <- ggplot() +
+    geom_col(data = summary_data,
+             aes(x = x_pos, y = signed_mean, fill = cvd_label),
+             width = bar_width, colour = "white", linewidth = 0.2) +
+    geom_errorbar(data = summary_data %>% filter(!is.na(se_imp) & se_imp > 0),
+                  aes(x = x_pos, ymin = ymin, ymax = ymax),
+                  width = bar_width * 0.5, linewidth = 0.4, colour = "grey30") +
+    geom_point(data = plot_data,
+               aes(x = x_pos, y = signed_importance, fill = cvd_label),
+               shape = 21, size = 1.2, alpha = 0.6, colour = "grey30",
+               position = position_jitter(width = bar_width * 0.12, height = 0, seed = 42)) +
+    geom_text(data = summary_data %>% filter(sig_star != ""),
+              aes(x = x_pos, y = star_y, label = sig_star),
+              size = 3.5, fontface = "bold", colour = "black") +
+    geom_hline(yintercept = 0, linetype = "solid", color = "grey30", linewidth = 0.5) +
+    scale_fill_manual(values = cvd_colors, name = "CVD Score", drop = FALSE) +
+    scale_x_continuous(
+      breaks = feature_tick_positions$x_tick,
+      labels = feature_tick_positions$feature_clean,
+      expand = expansion(add = 0.8)
+    ) +
+    labs(
+      title = sprintf("Permutation Feature Importance: %s", block_label),
+      subtitle = paste0("Mean \u00b1 SE (non-zero folds, \u22653 required) | 1000 permutations/fold | ",
+                        "Adjusted for ", paste(COVARIATE_COLS_COMMON, collapse = ", ")),
+      x = NULL,
+      y = expression(Delta ~ "MSE (signed by effect direction)")
+    ) +
+    annotate("text", x = min(feature_tick_positions$x_tick) - 0.5, y = Inf,
+             label = "Risk-Increasing  \u2191",
+             hjust = 0, vjust = 1.5, size = 3.5, color = "grey40", fontface = "italic") +
+    annotate("text", x = min(feature_tick_positions$x_tick) - 0.5, y = -Inf,
+             label = "Risk-Decreasing  \u2193",
+             hjust = 0, vjust = -0.5, size = 3.5, color = "grey40", fontface = "italic") +
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 13),
+      plot.subtitle = element_text(size = 9, color = "gray40", hjust = 0.5),
+      axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 11),
+      axis.title.y = element_text(size = 10),
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold", size = 10),
+      legend.text = element_text(size = 9),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.margin = margin(t = 10, r = 10, b = 10, l = 10)
+    )
+  
+  # ---- Sociodemographic reference level legend ----
+  if (block_name == "sociodemographics_lifestyle") {
+    refs <- get_sociodemographic_references()
+    features_in_plot <- feature_levels
+    refs_to_show <- character()
+    for (ref_name in names(refs)) {
+      pattern <- gsub(" ", "[_ .]", tolower(ref_name))
+      if (any(grepl(pattern, tolower(features_in_plot)))) {
+        refs_to_show <- c(refs_to_show, paste0(ref_name, ": ", refs[ref_name]))
+      }
+    }
+    if (length(refs_to_show) > 0) {
+      ref_text <- paste("Reference levels |", paste(refs_to_show, collapse = " | "))
+      p <- p + labs(caption = ref_text) +
+        theme(plot.caption = element_text(size = 7.5, color = "grey40", hjust = 0,
+                                          face = "italic", margin = margin(t = 8)))
+    }
+  }
+  
+  # Footnote about excluded combos
+  if (n_excluded_combos > 0) {
+    exclude_note <- sprintf("%d feature-score combinations excluded (appeared in <%d folds)",
+                            n_excluded_combos, min_nonzero_folds)
+    existing_caption <- p$labels$caption
+    new_caption <- if (!is.null(existing_caption)) {
+      paste0(existing_caption, "\n", exclude_note)
+    } else exclude_note
+    
+    p <- p + labs(caption = new_caption) +
+      theme(plot.caption = element_text(size = 7.5, color = "grey40", hjust = 0,
+                                        face = "italic", margin = margin(t = 8)))
+  }
+  
+  list(plot = p, n_features = n_features, plot_width = plot_width,
+       n_excluded_combos = n_excluded_combos)
+}
+
+
+#' Create and save bar plots for all dataset blocks
+create_all_importance_barplots <- function(importance_results,
+                                           coefficient_directions,
+                                           blocks = c("all_data", "lipids", "fatty_acids",
+                                                      "urine_nmr", "body_composition",
+                                                      "clinical_risk_factors",
+                                                      "sociodemographics_lifestyle"),
+                                           output_dir = "importance_barplots_common",
+                                           dataset_labels = NULL) {
+  
+  full_output_dir <- save_output(output_dir)
+  dir.create(full_output_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  if (is.null(dataset_labels)) {
+    dataset_labels <- c(
+      "all_data" = "All Predictors", "lipids" = "Lipids",
+      "fatty_acids" = "Fatty Acids", "urine_nmr" = "Urine NMR Metabolites",
+      "body_composition" = "Body Composition",
+      "clinical_risk_factors" = "Clinical Risk Factors",
+      "sociodemographics_lifestyle" = "Sociodemographics & Lifestyle"
+    )
+  }
+  
+  cat("\n=== Extracting per-fold importance data ===\n")
+  fold_data <- extract_per_fold_data(importance_results)
+  cat(sprintf("  Total fold-level records: %d\n", nrow(fold_data)))
+  
+  aggregated_df <- importance_results$aggregated
+  
+  cat(sprintf("\nCreating bar plots for %d blocks...\n", length(blocks)))
+  all_plots <- list()
+  
+  for (block in blocks) {
+    label <- ifelse(block %in% names(dataset_labels), dataset_labels[block], block)
+    cat(sprintf("  %s: ", label))
+    
+    result <- create_importance_barplot(
+      fold_data = fold_data,
+      coefficient_df = coefficient_directions,
+      aggregated_df = aggregated_df,
+      block_name = block,
+      block_label = label
+    )
+    
+    if (is.null(result)) {
+      cat("No features with positive importance in \u22653 folds\n")
+      next
+    }
+    
+    cat(sprintf("%d features (%d combos excluded)\n",
+                result$n_features, result$n_excluded_combos))
+    
+    ggsave(
+      file.path(full_output_dir, sprintf("importance_barplot_%s.pdf", block)),
+      result$plot,
+      width = result$plot_width,
+      height = 7
+    )
+    all_plots[[block]] <- result
+  }
+  
+  cat(sprintf("\n\u2713 Bar plots saved to %s/\n", output_dir))
+  all_plots
+}
+
+
+# ---- Run ----
+cat("\n=== Creating importance bar plots for COMMON (blocks-only) ===\n")
+
+importance_barplots_common <- create_all_importance_barplots(
+  importance_results = importance_results_common,
+  coefficient_directions = coefficient_directions_common,
+  output_dir = "importance_barplots_common"
+)
+
+cat("\n\u2713 All bar plots created\n")
