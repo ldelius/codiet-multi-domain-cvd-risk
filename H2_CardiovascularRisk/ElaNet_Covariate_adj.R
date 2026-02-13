@@ -58,11 +58,11 @@ df_QRISK3_input <- readRDS("QRISK3_calculation_input.rds") %>%
 df_covariates <- df_fatty_acids_raw_full %>%
   select(Sample_ID, Statins, Supplements) %>%
   full_join(df_risk_factors_raw_full %>% select(Sample_ID, Country), by = "Sample_ID") %>%
-  left_join(df_QRISK3_input %>% select(Sample_ID, Sex), by = "Sample_ID") %>%
+  left_join(df_QRISK3_input %>% select(Sample_ID, Sex, Age), by = "Sample_ID") %>%
   distinct(Sample_ID, .keep_all = TRUE)
 
 COVARIATE_COLS <- c("Country", "Statins", "Supplements")
-COVARIATE_COLS_COMMON <- c("Country", "Statins", "Supplements", "Sex")
+COVARIATE_COLS_COMMON <- c("Country", "Statins", "Supplements", "Sex", "Age")
 cat(sprintf("✓ Covariates table: %d samples\n", nrow(df_covariates)))
 
 df_fatty_acids_ElaNet <- readRDS("df_fatty_acids_predictor_statin_suppl.rds") %>%
@@ -2319,7 +2319,7 @@ create_block_importance_plots <- function(importance_results, coefficient_direct
 }
 
 # ============================================
-# 15. EXECUTE PERMUTATION IMPORTANCE
+# 15. EXECUTE PERMUTATION IMPORTANCE --> does only score-specifc + block? move pn to 16. for block only
 # ============================================
 
 cat("\n==========================================================\n")
