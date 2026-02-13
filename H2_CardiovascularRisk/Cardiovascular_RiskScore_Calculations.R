@@ -391,27 +391,34 @@ plot_composite
 figures_path <- "/Users/luisadelius/Documents/Code/project_one/Figures"
 
 ### plotting the distribution plots in a combined figure
-combined_plot <- (plot_qrisk3 + plot_framigham + plot_ASCVD) / 
-  (plot_SCORE2 + plot_composite + plot_spacer()) &
+combined_plot <- (plot_qrisk3 | plot_framigham | plot_ASCVD | plot_SCORE2) &
   theme(
-    plot.title = element_text(size = 9),
-    plot.subtitle = element_text(size = 7),
-    axis.title = element_text(size = 8),
-    axis.text = element_text(size = 7)
+    plot.title = element_text(size = 13, face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "grey40"),
+    axis.title = element_text(size = 11),
+    axis.text = element_text(size = 11),
+    axis.line = element_line(color = "black", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white"),
+    plot.background = element_rect(fill = "white"),
+    plot.margin = margin(5, 10, 5, 10)
   )
+
+combined_plot <- combined_plot & ylim(0, 30)
 
 combined_plot
 
-# Save Figure 1: Combined distribution plots
 ggsave(
-  filename = file.path(figures_path, "CVD_risk_distributions.png"),
+  filename = file.path(figures_path, "CVD_risk_distributions_wo_composite.png"),
   plot = combined_plot,
-  width = 10,
-  height = 8,
+  width = 16,
+  height = 4.5,
   dpi = 300
 )
-#########################
 
+###########################################################################
+########### Violine plot + Kendall's Tau correlation matrix ##############
+###########################################################################
 ## plotting the risk scores in a combined figure
 df_long <- df_all_risk_scores %>%
   pivot_longer(
@@ -422,68 +429,10 @@ df_long <- df_all_risk_scores %>%
   select(PatientID, score_type, risk)
 
 
-ggplot(df_long, aes(x = score_type, y = risk)) +
-  # 1. violins (overall distribution)
-  geom_violin(aes(fill = score_type), alpha = 0.4, colour = NA) +
-  
-  # 2. boxplot (median + IQR)
-  geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
-  
-  # 3. patient lines (connects a patient's scores)
-  geom_line(aes(group = PatientID), colour = "black", alpha = 0.25) +
-  
-  # 4. dots (individual values)
-  geom_point(size = 1.5, alpha = 0.7) +
-  
-  # change legend
-  scale_fill_discrete(
-    name = "Score Type", 
-    labels = c(
-      "SCORE2_score" = "SCORE2",
-      "QRISK3_risk"  = "QRISK3",
-      "ascvd_10y"    = "ASCVD",
-      "frs_10y"      = "Framingham"
-    )
-  ) +
-  
-  # change x-axis labels
-  scale_x_discrete(
-    labels = c(
-      "SCORE2_score" = "SCORE2",
-      "QRISK3_risk"  = "QRISK3",
-      "ascvd_10y"    = "ASCVD",
-      "frs_10y"      = "Framingham"
-    )
-  ) +
-  
-  labs(
-    title = "Cardiovascular Risk Score per Patient",
-    x = "Score Type",
-    y = "10-year Risk (%)"
-  ) +
-  theme_bw() +
-  theme(
-    legend.position = "right",
-    axis.text.x = element_text(angle = 25, hjust = 1)
-  )
-
-# Save Figure 2: Violin plot
-ggsave(
-  filename = file.path(figures_path, "CVD_risk_comparison.png"),
-  width = 8,
-  height = 6,
-  dpi = 300
-)
-
-###########################################################################
-# 5. Correlate the 4 risk scores & composite score with each other and plot heatmap style
-###########################################################################
-?cor(x, y, method = "kendall")
-
 ## create Kendall's Tau correlation matrix
 # subset relevant columns
 risk_mat <- df_all_risk_scores %>%
-  select(SCORE2_score, ascvd_10y, frs_10y, QRISK3_risk, mean_risk)
+  select(SCORE2_score, ascvd_10y, frs_10y, QRISK3_risk)
 
 # Kendall correlation matrix
 cor_kendall <- cor(risk_mat, method = "kendall", use = "pairwise.complete.obs") 
@@ -492,53 +441,89 @@ cor_kendall <- cor(risk_mat, method = "kendall", use = "pairwise.complete.obs")
 cor_kendall # call the matrix
 
 
-## heatmap with the matrix results
-as.data.frame(cor_kendall) %>% # convert the matrix into a dataframe so tidyverse function can work with it
-  rownames_to_column("var1") %>% # move the row names into a column called var1
-  pivot_longer(-var1, names_to = "var2", values_to = "tau") %>%
-  ggplot(aes(var1, var2, fill = tau)) + # xaxis 1st variable, yaxis 2nd variable, tau = color
-  geom_tile() +
-  geom_text(aes(label = round(tau, 2)), size = 5) +
-  scale_fill_gradient2(low="blue", mid="white", high="red", limits=c(-1,1)) +
-  
-  # relabel x-axis
+plot_A <- ggplot(df_long, aes(x = score_type, y = risk)) +
+  geom_violin(aes(fill = score_type), alpha = 0.4, colour = NA) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
+  geom_line(aes(group = PatientID), colour = "black", alpha = 0.25) +
+  geom_point(size = 1.5, alpha = 0.7) +
+  scale_fill_discrete(
+    name = NULL,
+    labels = c(
+      "SCORE2_score" = "SCORE2",
+      "QRISK3_risk"  = "QRISK3",
+      "ascvd_10y"    = "ASCVD",
+      "frs_10y"      = "Framingham"
+    )
+  ) +
   scale_x_discrete(
     labels = c(
       "SCORE2_score" = "SCORE2",
       "QRISK3_risk"  = "QRISK3",
       "ascvd_10y"    = "ASCVD",
-      "frs_10y"      = "Framingham",
-      "mean_risk"    = "Mean Risk"
+      "frs_10y"      = "Framingham"
     )
   ) +
-  
-  # relabel y-axis
+  labs(
+    title = NULL,
+    x = NULL,
+    y = "10-year Risk (%)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    axis.text.x = element_text(angle = 25, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+plot_B <- as.data.frame(cor_kendall) %>%
+  rownames_to_column("var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "tau") %>%
+  ggplot(aes(var1, var2, fill = tau)) +
+  geom_tile() +
+  geom_text(aes(label = round(tau, 2)), size = 3.5) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", limits = c(-1, 1)) +
+  scale_x_discrete(
+    labels = c(
+      "SCORE2_score" = "SCORE2",
+      "QRISK3_risk"  = "QRISK3",
+      "ascvd_10y"    = "ASCVD",
+      "frs_10y"      = "Framingham"
+    )
+  ) +
   scale_y_discrete(
     labels = c(
       "SCORE2_score" = "SCORE2",
       "QRISK3_risk"  = "QRISK3",
       "ascvd_10y"    = "ASCVD",
-      "frs_10y"      = "Framingham",
-      "mean_risk"    = "Mean Risk"
+      "frs_10y"      = "Framingham"
     )
   ) +
-  
-  coord_equal() + #makes equal squares
+  coord_equal() +
   theme_minimal() +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
-    axis.text.y = element_text(size = 14)
-    ) +
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12)
+  ) +
   labs(x = "", y = "")
 
-# Save Figure 3: Correlation heatmap (save the last plot)
+# Combine: A is ~65% width, B is ~35%
+combined_fig <- (plot_A | plot_B) +
+  plot_layout(widths = c(3, 1.5)) +
+  plot_annotation(tag_levels = "A") &
+  theme(
+    plot.tag = element_text(size = 12, face = "bold", family = "Arial")
+  )
+
+combined_fig
+
 ggsave(
-  filename = file.path(figures_path, "CVD_risk_correlations.png"),
-  width = 7,
+  filename = file.path(figures_path, "CVD_risk_violin_correlation.png"),
+  plot = combined_fig,
+  width = 14,
   height = 6,
   dpi = 300
 )
-
 
 ###########################################################################
 #. Supplementary Figure with CVD score input and outcomes
