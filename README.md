@@ -33,8 +33,7 @@ The calculation and aggregation of cardiovascular risk scores reported in Chapte
   - Contains the final results for all calculated cardiovascular risk scores used in downstream analyses.
 
 - **Figures**
-  - All figures presented in Chapter 3.1 (*Cardiovascular Risk Scores*) were generated within  
-    `Cardiovascular_RiskScore_Calculation.R`.
+  - All figures presented in Chapter 3.1 (*Cardiovascular Risk Scores*) were generated within [`Cardiovascular_RiskScore_Calculation.R`](H2_CardiovascularRisk/Cardiovascular_RiskScore_Calculation.R).
   - The supplementary figure showing CVD risk score input variables and CVD Score results was generated within the same script.
 
 #### Predictor Preparation
