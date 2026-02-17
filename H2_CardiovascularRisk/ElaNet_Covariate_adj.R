@@ -153,7 +153,7 @@ datasets_list <- list(
   fatty_acids = df_fatty_acids_raw,
   urine_nmr = df_urine_nmr_raw
 )
-datasets_list <- attach_covariates(datasets_list, COVARIATE_COLS_COMMON)
+datasets_list <- attach_covariates(datasets_list, COVARIATE_COLS)
 
 # ---- Score-specific input datasets (Sex stays as predictor, not covariate) ----
 
@@ -239,6 +239,31 @@ preprocess_train_test <- function(df_train, df_test, exclude_cols = NULL,
 }
 
 # ============================================
+# 3.5 HELPER: Alpha selection by minimum RMSE
+# ============================================
+# Selects the alpha with the lowest cross-validated RMSE at lambda.1se.
+# Lambda selection uses the one-SE rule (lambda.1se) per Hastie et al.,
+# while alpha is chosen purely by performance.
+
+select_best_alpha <- function(cv_results, alpha_grid, nfolds) {
+  # Extract RMSE at lambda.1se for each alpha
+  cv_rmse_vals <- sapply(cv_results, function(x) {
+    idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se)
+    sqrt(x$cv_fit$cvm[idx])
+  })
+  
+  best_idx <- which.min(cv_rmse_vals)
+  
+  list(
+    best_idx    = best_idx,
+    best_alpha  = alpha_grid[best_idx],
+    best_rmse   = cv_rmse_vals[best_idx],
+    all_rmse    = cv_rmse_vals
+  )
+}
+
+
+# ============================================
 # 4. PERMUTATION TEST FUNCTION
 # ============================================
 
@@ -255,15 +280,36 @@ compute_permutation_Q2 <- function(df_raw, y_shuffled, exclude_cols,
     preprocessed <- tryCatch(preprocess_train_test(df_train, df_test, exclude_cols), error = function(e) NULL)
     if (is.null(preprocessed) || ncol(preprocessed$X_train) == 0) return(NA_real_)
     pen_factor <- ifelse(preprocessed$is_covariate, 0, 1)
-    best_cv_fit <- NULL; best_mse <- Inf
-    for (a in alpha_grid) {
-      cv_fit <- tryCatch(cv.glmnet(x = preprocessed$X_train, y = y_train, alpha = a,
-                                   penalty.factor = pen_factor, nfolds = min(5, nfolds - 1),
+    
+    # Fit cv.glmnet for each alpha
+    cv_results <- list()
+    valid_count <- 0
+    for (a_idx in seq_along(alpha_grid)) {
+      cv_fit <- tryCatch(cv.glmnet(x = preprocessed$X_train, y = y_train, alpha = alpha_grid[a_idx],
+                                   penalty.factor = pen_factor, nfolds = nfolds,
                                    type.measure = "mse", standardize = FALSE, family = "gaussian"), error = function(e) NULL)
-      if (!is.null(cv_fit) && min(cv_fit$cvm) < best_mse) { best_mse <- min(cv_fit$cvm); best_cv_fit <- cv_fit }
+      if (!is.null(cv_fit)) {
+        valid_count <- valid_count + 1
+        cv_results[[valid_count]] <- list(alpha = alpha_grid[a_idx], cv_fit = cv_fit)
+      }
     }
-    if (is.null(best_cv_fit)) return(NA_real_)
-    y_oof[idx_test] <- as.numeric(predict(best_cv_fit, newx = preprocessed$X_test, s = "lambda.min"))
+    if (valid_count == 0) return(NA_real_)
+    
+    # Select alpha by minimum RMSE (with fallback)
+    valid_alphas <- sapply(cv_results, function(x) x$alpha)
+    alpha_selection <- tryCatch(
+      select_best_alpha(cv_results, valid_alphas, nfolds),
+      error = function(e) {
+        rmse_vals <- sapply(cv_results, function(x) {
+          idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se)
+          sqrt(x$cv_fit$cvm[idx])
+        })
+        list(best_idx = which.min(rmse_vals))
+      }
+    )
+    
+    best_cv_fit <- cv_results[[alpha_selection$best_idx]]$cv_fit
+    y_oof[idx_test] <- as.numeric(predict(best_cv_fit, newx = preprocessed$X_test, s = "lambda.1se"))
   }
   ss_res <- sum((y_shuffled - y_oof)^2); ss_tot <- sum((y_shuffled - mean(y_shuffled))^2)
   1 - ss_res / ss_tot
@@ -315,6 +361,7 @@ get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
   Q2_per_fold <- numeric(nfolds)
   MAE_per_fold <- numeric(nfolds)
   RMSE_per_fold <- numeric(nfolds)
+  R2_per_fold <- numeric(nfolds)
   
   for (k in 1:nfolds) {
     idx_test <- which(foldid_outer == k)
@@ -336,18 +383,19 @@ get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
       cv_fit <- cv.glmnet(
         x = X_train, y = y_train, alpha = a,
         penalty.factor = pen_factor,
-        nfolds = max(3, nfolds - 1),
+        nfolds = nfolds,
         type.measure = "mse", standardize = FALSE, family = "gaussian"
       )
-      list(alpha = a, cv_mse = min(cv_fit$cvm), cv_fit = cv_fit)
+      list(alpha = a, cv_fit = cv_fit)
     })
     
-    cv_mse_vals <- sapply(cv_results_fold, function(x) x$cv_mse)
-    best_idx <- which.min(cv_mse_vals)
-    alpha_selected_per_fold[k] <- cv_results_fold[[best_idx]]$alpha
+    # Select alpha by minimum RMSE at lambda.1se
+    alpha_selection <- select_best_alpha(cv_results_fold, alpha_grid, nfolds)
+    best_idx <- alpha_selection$best_idx
+    alpha_selected_per_fold[k] <- alpha_grid[best_idx]
     best_cv_fit <- cv_results_fold[[best_idx]]$cv_fit
     
-    y_pred_k <- as.numeric(predict(best_cv_fit, newx = X_test, s = "lambda.min"))
+    y_pred_k <- as.numeric(predict(best_cv_fit, newx = X_test, s = "lambda.1se"))
     y_oof[idx_test] <- y_pred_k
     
     ss_res_k <- sum((y_test - y_pred_k)^2)
@@ -355,6 +403,11 @@ get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
     Q2_per_fold[k] <- 1 - ss_res_k / ss_tot_k
     MAE_per_fold[k] <- mean(abs(y_test - y_pred_k))
     RMSE_per_fold[k] <- sqrt(mean((y_test - y_pred_k)^2))
+    
+    y_pred_train_k <- as.numeric(predict(best_cv_fit, newx = X_train, s = "lambda.1se"))
+    ss_res_train <- sum((y_train - y_pred_train_k)^2)
+    ss_tot_train <- sum((y_train - mean(y_train))^2)
+    R2_per_fold[k] <- 1 - ss_res_train / ss_tot_train
   }
   
   list(
@@ -364,10 +417,10 @@ get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
     foldid = foldid_outer,
     Q2_per_fold = Q2_per_fold,
     MAE_per_fold = MAE_per_fold,
-    RMSE_per_fold = RMSE_per_fold
+    RMSE_per_fold = RMSE_per_fold,
+    R2_per_fold = R2_per_fold
   )
 }
-
 
 run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_name,
                                   exclude_cols = "Sample_ID",
@@ -401,7 +454,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   cat(sprintf("  Sample size after filtering: %d\n", n_obs))
   
   if (n_obs < nfolds * 2) {
-    warning(sprintf("⚠ Very few observations (%d) for %d-fold CV — proceeding with caution", n_obs, nfolds))
+    warning(sprintf("Very few observations (%d) for %d-fold CV — proceeding with caution", n_obs, nfolds))
   }
   
   # ---- PART A: Full-data model (for coefficients) ----
@@ -431,28 +484,31 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
       nfolds = nfolds, foldid = foldid_inner,
       type.measure = "mse", standardize = FALSE, family = "gaussian"
     )
-    min_cvm_idx <- which(cv_fit$lambda == cv_fit$lambda.min)
-    list(alpha = a, cv_mse_min = cv_fit$cvm[min_cvm_idx], cv_fit = cv_fit)
+    list(alpha = a, cv_fit = cv_fit)
   })
   
-  cv_mse_values <- sapply(cv_results, function(x) x$cv_mse_min)
-  best_alpha_idx <- which.min(cv_mse_values)
+  # Select alpha by minimum RMSE at lambda.1se
+  alpha_selection <- select_best_alpha(cv_results, alpha_grid, nfolds)
+  best_alpha_idx <- alpha_selection$best_idx
   best_alpha_fulldata <- alpha_grid[best_alpha_idx]
   best_cv_fit <- cv_results[[best_alpha_idx]]$cv_fit
   
+  cat(sprintf("  Alpha selection: min RMSE = %.4f at alpha = %.1f\n",
+              alpha_selection$best_rmse, best_alpha_fulldata))
+  
   lambda_min <- best_cv_fit$lambda.min
   lambda_1se <- best_cv_fit$lambda.1se
-  cv_mse_min <- min(best_cv_fit$cvm)
-  cv_mse_1se <- best_cv_fit$cvm[which(best_cv_fit$lambda == lambda_1se)]
+  cv_rmse_min <- sqrt(min(best_cv_fit$cvm))
+  cv_rmse_1se <- sqrt(best_cv_fit$cvm[which(best_cv_fit$lambda == lambda_1se)])
   
-  final_coef <- coef(best_cv_fit, s = "lambda.min")
+  final_coef <- coef(best_cv_fit, s = "lambda.1se")
   intercept <- as.numeric(final_coef[1])
   coef_vector <- as.numeric(final_coef[-1])
   names(coef_vector) <- predictor_names
   n_nonzero <- sum(coef_vector != 0)
   
   # ---- PART B: In-sample predictions (R²_Y) ----
-  y_pred_in <- as.numeric(predict(best_cv_fit, newx = X_full, s = "lambda.min"))
+  y_pred_in <- as.numeric(predict(best_cv_fit, newx = X_full, s = "lambda.1se"))
   res_in <- y - y_pred_in
   rmse_in <- sqrt(mean(res_in^2))
   mae_in <- mean(abs(res_in))
@@ -482,12 +538,15 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   MAE_fold_sd <- sd(MAE_per_fold)
   RMSE_fold_mean <- mean(RMSE_per_fold)
   RMSE_fold_sd <- sd(RMSE_per_fold)
+  R2_per_fold <- oof_results$R2_per_fold
+  R2_fold_mean <- mean(R2_per_fold)
+  R2_fold_sd <- sd(R2_per_fold)
   
   # ---- PART D: Model quality metrics ----
   Q2_R2_ratio <- Q2_Y / R2_Y
   R2_Q2_gap <- R2_Y - Q2_Y
   dev_explained <- best_cv_fit$glmnet.fit$dev.ratio[
-    which.min(abs(best_cv_fit$glmnet.fit$lambda - lambda_min))
+    which.min(abs(best_cv_fit$glmnet.fit$lambda - lambda_1se))
   ]
   
   # ---- PART E: Permutation test ----
@@ -534,14 +593,19 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
     n_nonzero_coefs = n_nonzero,
     n_nonzero_penalized = length(penalized_nonzero),
     n_nonzero_covariates = length(covariate_nonzero),
+    alpha_selection_method = "min_rmse",
     alpha_optimal_fulldata = best_alpha_fulldata,
     alpha_mean_nested = mean(alpha_per_fold),
     lambda_min = lambda_min,
     lambda_1se = lambda_1se,
+    lambda_selection_method = "one_se",
     n_folds = nfolds,
-    cv_mse_min = cv_mse_min,
-    cv_mse_1se = cv_mse_1se,
+    cv_rmse_min = cv_rmse_min,
+    cv_rmse_1se = cv_rmse_1se,
     R2_Y = R2_Y,
+    R2_fold_mean = R2_fold_mean,
+    R2_fold_sd = R2_fold_sd,
+    R2_per_fold = list(R2_per_fold),
     in_sample_rmse = rmse_in,
     in_sample_mae = mae_in,
     in_sample_cor = cor_in,
@@ -557,7 +621,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
     Q2_Y_cor = cor_oof,
     Q2_fold_mean = Q2_fold_mean,
     Q2_fold_sd = Q2_fold_sd,
-    Q2_fold_summary = sprintf("%.3f ± %.3f", Q2_fold_mean, Q2_fold_sd),
+    Q2_fold_summary = sprintf("%.3f +/- %.3f", Q2_fold_mean, Q2_fold_sd),
     Q2_per_fold = list(Q2_per_fold),
     Q2_R2_ratio = Q2_R2_ratio,
     R2_Q2_gap = R2_Q2_gap,
@@ -614,7 +678,7 @@ run_score_specific_models <- function(score_specific_datasets,
     
     incremental_file <- file.path(incremental_dir, sprintf("model_%02d_%s.rds", i, cvd_score))
     if (file.exists(incremental_file)) {
-      cat("  ↪ Loading from incremental save\n")
+      cat("  Loading from incremental save\n")
       results_list[[i]] <- readRDS(incremental_file)
       next
     }
@@ -628,9 +692,9 @@ run_score_specific_models <- function(score_specific_datasets,
       )
       results_list[[i]] <- result
       saveRDS(result, incremental_file)
-      cat("  ✓ Success\n")
+      cat("  Success\n")
     }, error = function(e) {
-      cat(sprintf("  ✗ ERROR: %s\n", e$message))
+      cat(sprintf("  ERROR: %s\n", e$message))
       results_list[[i]] <- NULL
     })
   }
@@ -638,7 +702,7 @@ run_score_specific_models <- function(score_specific_datasets,
   results_df <- bind_rows(results_list)
   qs_save(results_df, file = save_output(output_file))
   saveRDS(results_df, file = save_output(gsub("\\.qs2$", ".rds", output_file)))
-  cat(sprintf("\n✓ Saved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
+  cat(sprintf("\nSaved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
   results_df
 }
 
@@ -646,7 +710,7 @@ run_score_specific_models <- function(score_specific_datasets,
 run_common_datasets_models <- function(datasets_list, cvd_score_names,
                                        alpha_grid = seq(0, 1, by = 0.1),
                                        nfolds = 10, n_permutations = 100,
-                                       covariate_cols = COVARIATE_COLS_COMMON,
+                                       covariate_cols = COVARIATE_COLS,
                                        seed = 42,
                                        output_file = "elastic_net_common.qs2") {
   results_list <- list()
@@ -657,7 +721,7 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names,
   dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
   
   cat("==========================================================\n")
-  cat("ELASTIC NET (COV-ADJUSTED): COMMON DATASETS × CVD SCORES\n")
+  cat("ELASTIC NET (COV-ADJUSTED): COMMON DATASETS x CVD SCORES\n")
   cat(sprintf("Models: %d | Perms: %d | Covariates: %s\n",
               n_models, n_permutations, paste(covariate_cols, collapse = ", ")))
   cat("==========================================================\n")
@@ -671,14 +735,14 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names,
       incremental_file <- file.path(incremental_dir,
                                     sprintf("model_%03d_%s_%s.rds", counter, cvd_score, dataset_name))
       if (file.exists(incremental_file)) {
-        cat("  ↪ Loading from incremental save\n")
+        cat("  Loading from incremental save\n")
         results_list[[counter]] <- readRDS(incremental_file)
         counter <- counter + 1
         next
       }
       
       if (!cvd_score %in% colnames(df)) {
-        cat(sprintf("  ✗ Column '%s' not found\n", cvd_score))
+        cat(sprintf("  Column '%s' not found\n", cvd_score))
         counter <- counter + 1
         next
       }
@@ -692,9 +756,9 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names,
         )
         results_list[[counter]] <- result
         saveRDS(result, incremental_file)
-        cat("  ✓ Success\n")
+        cat("  Success\n")
       }, error = function(e) {
-        cat(sprintf("  ✗ ERROR: %s\n", e$message))
+        cat(sprintf("  ERROR: %s\n", e$message))
         results_list[[counter]] <- NULL
       })
       counter <- counter + 1
@@ -704,7 +768,7 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names,
   results_df <- bind_rows(results_list)
   qs_save(results_df, file = save_output(output_file))
   saveRDS(results_df, file = save_output(gsub("\\.qs2$", ".rds", output_file)))
-  cat(sprintf("\n✓ Saved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
+  cat(sprintf("\nSaved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
   results_df
 }
 
@@ -737,7 +801,7 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
       incremental_file <- file.path(incremental_dir,
                                     sprintf("model_%03d_%s_%s.rds", counter, cvd_score, block_name))
       if (file.exists(incremental_file)) {
-        cat("  ↪ Loading from incremental save\n")
+        cat("  Loading from incremental save\n")
         results_list[[counter]] <- readRDS(incremental_file)
         counter <- counter + 1
         next
@@ -756,9 +820,9 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
         )
         results_list[[counter]] <- result
         saveRDS(result, incremental_file)
-        cat("  ✓ Success\n")
+        cat("  Success\n")
       }, error = function(e) {
-        cat(sprintf("  ✗ ERROR: %s\n", e$message))
+        cat(sprintf("  ERROR: %s\n", e$message))
         results_list[[counter]] <- NULL
       })
       counter <- counter + 1
@@ -768,10 +832,9 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
   results_df <- bind_rows(results_list)
   qs_save(results_df, file = save_output(output_file))
   saveRDS(results_df, file = save_output(gsub("\\.qs2$", ".rds", output_file)))
-  cat(sprintf("\n✓ Saved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
+  cat(sprintf("\nSaved %d models to %s (+ .rds backup)\n", nrow(results_df), output_file))
   results_df
 }
-
 
 # ============================================
 # 8. RESULTS VIEWER
@@ -831,6 +894,7 @@ results_common <- run_common_datasets_models(
   cvd_score_names = CVD_scores,
   alpha_grid = seq(0, 1, by = 0.1),
   nfolds = 5, n_permutations = 0, seed = 42,
+  covariate_cols = COVARIATE_COLS,
   output_file = "elastic_net_common_5fold.qs2"
 )
 
@@ -907,13 +971,14 @@ results_main <- results_all %>%
     cvd_score, dataset_name, model_name,
     n_observations, n_predictors, n_penalized_predictors, n_covariates, covariates_used,
     n_nonzero_coefs, n_nonzero_penalized, n_nonzero_covariates,
-    alpha_optimal_fulldata, alpha_mean_nested, lambda_min, lambda_1se,
-    R2_Y, in_sample_rmse, in_sample_mae, in_sample_cor,
+    alpha_selection_method, alpha_optimal_fulldata, alpha_mean_nested,
+    lambda_min, lambda_1se, lambda_selection_method,
+    R2_Y, R2_fold_mean, R2_fold_sd, in_sample_rmse, in_sample_mae, in_sample_cor,
     Q2_Y, Q2_fold_mean, Q2_fold_sd, Q2_fold_summary,
     Q2_Y_rmse, Q2_Y_mae, Q2_Y_cor,
     Q2_R2_ratio, R2_Q2_gap,
     permutation_p_value, permutation_n, permutation_null_mean_Q2,
-    cv_mse_min, cv_mse_1se, pct_deviance_explained,
+    cv_rmse_min, cv_rmse_1se, pct_deviance_explained,
     imputation_method, col_miss_threshold, row_miss_threshold,
     n_folds, seed, date_run
   )
@@ -1023,20 +1088,20 @@ cat("\n✓ Excel saved: elastic_net_results_cov_adjusted.xlsx\n")
 # 12. TABLE CREATION FUNCTIONS
 # ============================================
 
-cvd_score_order <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
+cvd_score_order <- c("ascvd_10y", "frs_10y", "QRISK3_risk", "SCORE2_score")
 
 cvd_score_labels <- c(
-  "QRISK3_risk" = "QRISK3",
   "SCORE2_score" = "SCORE2",
+  "QRISK3_risk" = "QRISK3",
   "frs_10y" = "Framingham",
   "ascvd_10y" = "ASCVD"
 )
 
 dataset_labels_table <- c(
-  "all_data" = "All predictors",
+  "all_data" = "Full predictor set",
   "body_composition" = "Body composition",
   "sociodemographics_lifestyle" = "Sociodemographics & lifestyle",
-  "clinical_risk_factors" = "Clinical risk factors",
+  "clinical_risk_factors" = "Clinical Measurements & Supplementary Biomarkers",
   "lipids" = "Lipids",
   "fatty_acids" = "Fatty acids",
   "urine_nmr" = "Urine NMR",
@@ -1052,45 +1117,42 @@ create_score_specific_table <- function(results_df, table_title) {
     ) %>%
     arrange(cvd_score)
   
-  has_mae_sd <- "MAE_fold_sd" %in% names(table_data) && any(!is.na(table_data$MAE_fold_sd))
-  has_rmse_sd <- "RMSE_fold_sd" %in% names(table_data) && any(!is.na(table_data$RMSE_fold_sd))
-  
   formatted_table <- table_data %>%
     mutate(
-      `R²` = sprintf("%.3f", R2_Y),
-      `Q²` = ifelse(!is.na(Q2_fold_sd) & Q2_fold_sd > 0,
-                    sprintf("%.3f ± %.3f", Q2_Y, Q2_fold_sd),
-                    sprintf("%.3f", Q2_Y)),
-      MAE = if (has_mae_sd) {
-        ifelse(!is.na(MAE_fold_sd) & MAE_fold_sd > 0,
-               sprintf("%.3f ± %.3f", Q2_Y_mae, MAE_fold_sd),
-               sprintf("%.3f", Q2_Y_mae))
-      } else sprintf("%.3f", Q2_Y_mae),
-      RMSE = if (has_rmse_sd) {
-        ifelse(!is.na(RMSE_fold_sd) & RMSE_fold_sd > 0,
-               sprintf("%.3f ± %.3f", Q2_Y_rmse, RMSE_fold_sd),
-               sprintf("%.3f", Q2_Y_rmse))
-      } else sprintf("%.3f", Q2_Y_rmse),
-      `Perm. p` = ifelse(is.na(permutation_p_value), "—",
-                         ifelse(permutation_p_value < 0.001, "<0.001",
-                                sprintf("%.3f", permutation_p_value)))
+      R2 = ifelse(!is.na(R2_fold_sd) & R2_fold_sd > 0,
+                  sprintf("%.3f \u00B1 %.3f", R2_fold_mean, R2_fold_sd),
+                  sprintf("%.3f", R2_Y)),
+      Q2 = ifelse(!is.na(Q2_fold_sd) & Q2_fold_sd > 0,
+                  sprintf("%.3f \u00B1 %.3f", Q2_Y, Q2_fold_sd),
+                  sprintf("%.3f", Q2_Y)),
+      MAE = ifelse(!is.na(MAE_fold_sd) & MAE_fold_sd > 0,
+                   sprintf("%.3f \u00B1 %.3f", Q2_Y_mae, MAE_fold_sd),
+                   sprintf("%.3f", Q2_Y_mae)),
+      perm_p = ifelse(is.na(permutation_p_value), "\u2014",
+                      ifelse(permutation_p_value < 0.001, "<0.001",
+                             sprintf("%.3f", permutation_p_value)))
     ) %>%
-    select(CVD_Score, `R²`, `Q²`, MAE, RMSE, `Perm. p`)
+    select(CVD_Score, R2, Q2, MAE, perm_p)
   
   formatted_table %>%
     flextable() %>%
     set_caption(caption = table_title) %>%
-    set_header_labels(CVD_Score = "CVD Score") %>%
+    set_header_labels(
+      CVD_Score = "CVD Score",
+      R2 = "R\u00B2 \u00B1 SD",
+      Q2 = "Q\u00B2 \u00B1 SD",
+      MAE = "MAE \u00B1 SD",
+      perm_p = "Perm. p"
+    ) %>%
     align(j = 1, align = "left", part = "all") %>%
-    align(j = 2:6, align = "center", part = "all") %>%
+    align(j = 2:5, align = "center", part = "all") %>%
     font(fontname = "Arial", part = "all") %>%
     flextable::fontsize(size = 9, part = "body") %>%
     flextable::fontsize(size = 10, part = "header") %>%
     bold(part = "header") %>%
     width(j = 1, width = 1.2) %>%
-    width(j = 2, width = 0.8) %>%
-    width(j = 3:5, width = 1.2) %>%
-    width(j = 6, width = 1.0) %>%
+    width(j = 2:4, width = 1.3) %>%
+    width(j = 5, width = 1.0) %>%
     border_remove() %>%
     hline_top(border = fp_border(width = 2), part = "all") %>%
     hline_bottom(border = fp_border(width = 2), part = "body") %>%
@@ -1118,33 +1180,25 @@ create_multi_score_table <- function(results_df, table_title,
   if (nrow(table_data) == 0) { warning("No data!"); return(NULL) }
   table_data <- table_data %>% arrange(dataset_name, cvd_score)
   
-  has_mae_sd <- "MAE_fold_sd" %in% names(table_data) && any(!is.na(table_data$MAE_fold_sd))
-  has_rmse_sd <- "RMSE_fold_sd" %in% names(table_data) && any(!is.na(table_data$RMSE_fold_sd))
-  
   formatted_table <- table_data %>%
     mutate(
       Dataset = ifelse(dataset_name %in% names(dataset_labels),
                        dataset_labels[as.character(dataset_name)],
                        as.character(dataset_name)),
-      `R²` = sprintf("%.3f", R2_Y),
-      `Q²` = ifelse(!is.na(Q2_fold_sd) & Q2_fold_sd > 0,
-                    sprintf("%.3f ± %.3f", Q2_Y, Q2_fold_sd),
-                    sprintf("%.3f", Q2_Y)),
-      MAE = if (has_mae_sd) {
-        ifelse(!is.na(MAE_fold_sd) & MAE_fold_sd > 0,
-               sprintf("%.3f ± %.3f", Q2_Y_mae, MAE_fold_sd),
-               sprintf("%.3f", Q2_Y_mae))
-      } else sprintf("%.3f", Q2_Y_mae),
-      RMSE = if (has_rmse_sd) {
-        ifelse(!is.na(RMSE_fold_sd) & RMSE_fold_sd > 0,
-               sprintf("%.3f ± %.3f", Q2_Y_rmse, RMSE_fold_sd),
-               sprintf("%.3f", Q2_Y_rmse))
-      } else sprintf("%.3f", Q2_Y_rmse),
-      `Perm. p` = ifelse(is.na(permutation_p_value), "—",
-                         ifelse(permutation_p_value < 0.001, "<0.001",
-                                sprintf("%.3f", permutation_p_value)))
+      R2 = ifelse(!is.na(R2_fold_sd) & R2_fold_sd > 0,
+                  sprintf("%.3f \u00B1 %.3f", R2_fold_mean, R2_fold_sd),
+                  sprintf("%.3f", R2_Y)),
+      Q2 = ifelse(!is.na(Q2_fold_sd) & Q2_fold_sd > 0,
+                  sprintf("%.3f \u00B1 %.3f", Q2_Y, Q2_fold_sd),
+                  sprintf("%.3f", Q2_Y)),
+      MAE = ifelse(!is.na(MAE_fold_sd) & MAE_fold_sd > 0,
+                   sprintf("%.3f \u00B1 %.3f", Q2_Y_mae, MAE_fold_sd),
+                   sprintf("%.3f", Q2_Y_mae)),
+      perm_p = ifelse(is.na(permutation_p_value), "\u2014",
+                      ifelse(permutation_p_value < 0.001, "<0.001",
+                             sprintf("%.3f", permutation_p_value)))
     ) %>%
-    select(Dataset, CVD_Score, `R²`, `Q²`, MAE, RMSE, `Perm. p`)
+    select(Dataset, CVD_Score, R2, Q2, MAE, perm_p)
   
   n_rows <- nrow(formatted_table)
   
@@ -1152,9 +1206,15 @@ create_multi_score_table <- function(results_df, table_title,
     flextable() %>%
     merge_v(j = "Dataset") %>%
     set_caption(caption = table_title) %>%
-    set_header_labels(CVD_Score = "CVD Score") %>%
+    set_header_labels(
+      CVD_Score = "CVD Score",
+      R2 = "R\u00B2 \u00B1 SD",
+      Q2 = "Q\u00B2 \u00B1 SD",
+      MAE = "MAE \u00B1 SD",
+      perm_p = "Perm. p"
+    ) %>%
     align(j = 1:2, align = "left", part = "all") %>%
-    align(j = 3:7, align = "center", part = "all") %>%
+    align(j = 3:6, align = "center", part = "all") %>%
     font(fontname = "Arial", part = "all") %>%
     flextable::fontsize(size = 9, part = "body") %>%
     flextable::fontsize(size = 10, part = "header") %>%
@@ -1162,17 +1222,16 @@ create_multi_score_table <- function(results_df, table_title,
     bold(j = 1, part = "body") %>%
     width(j = 1, width = 1.8) %>%
     width(j = 2, width = 1.0) %>%
-    width(j = 3, width = 0.7) %>%
-    width(j = 4:6, width = 1.2) %>%
-    width(j = 7, width = 1.0) %>%
+    width(j = 3:5, width = 1.3) %>%
+    width(j = 6, width = 1.0) %>%
     border_remove() %>%
     hline_top(border = fp_border(width = 2), part = "all") %>%
     hline_bottom(border = fp_border(width = 2), part = "body") %>%
     hline(i = 1, border = fp_border(width = 1.5), part = "header") %>%
     padding(padding = 3, part = "all")
   
-  if (n_rows > 5) {
-    hline_rows <- seq(5, n_rows - 1, by = 5)
+  if (n_rows > 4) {
+    hline_rows <- seq(4, n_rows - 1, by = 4)
     if (length(hline_rows) > 0) {
       ft <- ft %>%
         hline(i = hline_rows,
@@ -1253,6 +1312,477 @@ doc <- read_docx() %>%
 
 print(doc, target = save_output("Elastic_Net_All_Tables_CovAdj.docx"))
 cat("\n✓ All tables saved\n")
+
+
+
+
+
+# ============================================
+# 14. GROUPED-BY-SCORE PERFORMANCE PLOT COMPARING SCORE-SPECIFIC WITH SCORE-SPECIFIC + DATA SETS
+# ============================================
+
+cat("\n==========================================================\n")
+cat("CREATING GROUPED-BY-SCORE PERFORMANCE PLOT\n")
+cat("==========================================================\n")
+
+# --- Define predictor set order and labels ---
+block_order <- c("lipids", "fatty_acids", "urine_nmr",
+                 "body_composition", "clinical_risk_factors",
+                 "sociodemographics_lifestyle")
+block_order <- block_order[block_order %in% unique(results_common$dataset_name)]
+
+model_type_order <- c(
+  "score_specific",
+  "score_specific+all_data",
+  paste0("score_specific+", block_order)
+)
+
+model_type_labels <- c(
+  "score_specific" = "Score-specific only",
+  "score_specific+all_data" = "Score inputs + Full set",
+  "score_specific+lipids" = "Score inputs + Lipids",
+  "score_specific+fatty_acids" = "Score inputs + Fatty acids",
+  "score_specific+urine_nmr" = "Score inputs + Urine NMR",
+  "score_specific+body_composition" = "Score inputs + Body composition",
+  "score_specific+clinical_risk_factors" = "Score inputs + Clinical Measurements & Suppl. Biomarkers",
+  "score_specific+sociodemographics_lifestyle" = "Score inputs + Sociodemographics & Lifestyle"
+)
+
+# --- Predictor set colours (avoiding CVD score colours) ---
+predictor_colors <- c(
+  "Score-specific only" = "#888888",
+  "Score inputs + Full set" = "#2D2D2D",
+  "Score inputs + Lipids" = "#E63946",
+  "Score inputs + Fatty acids" = "#F4A261",
+  "Score inputs + Urine NMR" = "#E9C46A",
+  "Score inputs + Body composition" = "#457B9D",
+  "Score inputs + Clinical Measurements & Suppl. Biomarkers" = "#2A9D8F",
+  "Score inputs + Sociodemographics & Lifestyle" = "#7B2D8E"
+)
+
+# --- Assemble data ---
+d_score_specific <- results_score_specific %>%
+  filter(cvd_score %in% cvd_score_order) %>%
+  mutate(model_type = "score_specific")
+
+d_score_plus <- results_score_plus_blocks %>%
+  filter(cvd_score %in% cvd_score_order) %>%
+  mutate(
+    block = sub("^.*_specific\\+", "", dataset_name),
+    model_type = paste0("score_specific+", block)
+  )
+
+plot_data_grouped <- bind_rows(d_score_specific, d_score_plus) %>%
+  filter(model_type %in% model_type_order) %>%
+  mutate(
+    cvd_label = cvd_score_labels[as.character(cvd_score)],
+    cvd_label = factor(cvd_label, levels = rev(cvd_score_labels)),
+    model_type = factor(model_type, levels = model_type_order),
+    model_label = model_type_labels[as.character(model_type)],
+    model_label = factor(model_label,
+                         levels = model_type_labels[model_type_order])
+  )
+
+if (!"Q2_fold_sd" %in% names(plot_data_grouped)) plot_data_grouped$Q2_fold_sd <- 0
+if (!"MAE_fold_sd" %in% names(plot_data_grouped)) plot_data_grouped$MAE_fold_sd <- 0
+
+
+# --- Plot A: Q² ± SD (vertical) ---
+p_q2_vertical <- plot_data_grouped %>%
+  ggplot(aes(x = cvd_label, y = Q2_Y, fill = model_label)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+  geom_errorbar(
+    aes(ymin = Q2_Y - Q2_fold_sd, ymax = Q2_Y + Q2_fold_sd),
+    position = position_dodge(width = 0.85), width = 0.3, linewidth = 0.3
+  ) +
+  geom_text(
+    aes(y = pmax(Q2_Y, Q2_Y + Q2_fold_sd), label = sprintf("%.2f", Q2_Y)),
+    position = position_dodge(width = 0.85), vjust = -0.4, size = 2.1
+  ) +
+  scale_fill_manual(values = predictor_colors, breaks = unname(model_type_labels[model_type_order])) +
+  coord_cartesian(ylim = c(q2_ymin, 1.08)) +
+  scale_y_continuous(breaks = seq(q2_ymin, 1, by = 0.1)) +
+  labs(title = expression(bold(paste("A) ", Q^2, " ± SD"))),
+       y = expression(bold(Q^2)), x = NULL, fill = "Model") +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial"),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13, face = "bold"),
+    plot.title = element_text(hjust = 0, size = 15),
+    axis.text.x = element_text(size = 12, face = "bold"),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 2, override.aes = list(size = 3)))
+
+# --- Plot B: MAE ± SD (vertical) ---
+p_mae_vertical <- plot_data_grouped %>%
+  ggplot(aes(x = cvd_label, y = Q2_Y_mae, fill = model_label)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+  geom_errorbar(
+    aes(ymin = pmax(0, Q2_Y_mae - MAE_fold_sd), ymax = Q2_Y_mae + MAE_fold_sd),
+    position = position_dodge(width = 0.85), width = 0.3, linewidth = 0.3
+  ) +
+  geom_text(
+    aes(y = Q2_Y_mae + MAE_fold_sd, label = sprintf("%.2f", Q2_Y_mae)),
+    position = position_dodge(width = 0.85), vjust = -0.4, size = 2.1
+  ) +
+  scale_fill_manual(values = predictor_colors, breaks = unname(model_type_labels[model_type_order])) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(title = expression(bold(paste("B) MAE ± SD"))),
+       y = expression(bold("MAE")), x = NULL, fill = "Model") +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial"),
+    legend.position = "bottom",
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13, face = "bold"),
+    plot.title = element_text(hjust = 0, size = 15),
+    axis.text.x = element_text(size = 12, face = "bold"),
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 2, override.aes = list(size = 3)))
+
+# --- Combine with shared legend ---
+combined_vertical_plot <- (p_q2_vertical | p_mae_vertical) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom",
+        legend.justification = "center")
+
+print(combined_vertical_plot)
+
+ggsave(save_output("elastic_net_grouped_by_score_vertical.png"),
+       plot = combined_vertical_plot, width = 14, height = 7, dpi = 300, bg = "white")
+ggsave(save_output("elastic_net_grouped_by_score_vertical.pdf"),
+       plot = combined_vertical_plot, width = 14, height = 7, device = "pdf")
+
+cat("\n✓ Vertical grouped-by-score plots saved\n")
+
+
+
+
+
+
+# ============================================
+# TUNING DIAGNOSTIC PLOTS — ELASTIC NET
+# ============================================
+# Two outputs:
+#   1. All 8 datasets (exploratory, with title)
+#   2. 5 selected datasets (thesis figure, no title)
+# ============================================
+
+library(tidyverse)
+library(glmnet)
+library(patchwork)
+
+# ============================================
+# 1. MAIN DATA EXTRACTION FUNCTION
+# ============================================
+
+extract_tuning_data <- function(df_raw, outcome_col, dataset_name,
+                                exclude_cols = "Sample_ID",
+                                covariate_cols, CVD_scores_vec,
+                                alpha_grid = seq(0, 1, by = 0.1),
+                                nfolds = 10, seed = 42,
+                                col_miss_thresh = 0.4, row_miss_thresh = 0.8) {
+  
+  set.seed(seed)
+  
+  df_complete <- df_raw %>% filter(!is.na(.data[[outcome_col]]))
+  all_exclude <- unique(c(exclude_cols, outcome_col, CVD_scores_vec))
+  cols_to_protect <- unique(c(all_exclude, covariate_cols))
+  df_filtered <- filter_by_missingness(df_complete, cols_to_protect, col_miss_thresh, row_miss_thresh)
+  
+  for (cov in covariate_cols) {
+    if (!cov %in% names(df_filtered) && cov %in% names(df_complete)) {
+      df_filtered[[cov]] <- df_complete[[cov]][match(df_filtered$Sample_ID, df_complete$Sample_ID)]
+    }
+  }
+  
+  y <- df_filtered[[outcome_col]]
+  n_raw_predictors <- length(setdiff(names(df_filtered), c("Sample_ID", outcome_col)))
+  preprocessed <- preprocess_train_test(df_filtered, df_filtered, all_exclude, covariate_cols)
+  X <- preprocessed$X_train
+  pen_factor <- ifelse(preprocessed$is_covariate, 0, 1)
+  
+  foldid <- sample(rep(1:nfolds, length.out = length(y)))
+  
+  all_cv_fits <- lapply(alpha_grid, function(a) {
+    cv_fit <- cv.glmnet(
+      x = X, y = y, alpha = a,
+      penalty.factor = pen_factor,
+      nfolds = nfolds, foldid = foldid,
+      type.measure = "mse", standardize = FALSE, family = "gaussian"
+    )
+    list(alpha = a, cv_fit = cv_fit)
+  })
+  
+  alpha_rmse_df <- tibble(
+    alpha = alpha_grid,
+    cv_rmse = sapply(all_cv_fits, function(x) {
+      idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se)
+      sqrt(x$cv_fit$cvm[idx])
+    }),
+    cv_rmse_se = sapply(all_cv_fits, function(x) {
+      idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se)
+      mse_sd <- x$cv_fit$cvsd[idx]
+      rmse_val <- sqrt(x$cv_fit$cvm[idx])
+      (mse_sd / sqrt(nfolds)) / (2 * rmse_val)
+    })
+  )
+  
+  best_alpha_idx <- which.min(alpha_rmse_df$cv_rmse)
+  best_alpha <- alpha_rmse_df$alpha[best_alpha_idx]
+  best_cv_fit <- all_cv_fits[[best_alpha_idx]]$cv_fit
+  
+  lambda_df <- tibble(
+    log_lambda = log(best_cv_fit$lambda),
+    cv_rmse = sqrt(best_cv_fit$cvm),
+    cv_rmse_se = sapply(seq_along(best_cv_fit$lambda), function(i) {
+      mse_sd <- best_cv_fit$cvsd[i]
+      rmse_val <- sqrt(best_cv_fit$cvm[i])
+      (mse_sd / sqrt(nfolds)) / (2 * rmse_val)
+    }),
+    nzero = best_cv_fit$nzero
+  )
+  
+  nzero_at_min <- best_cv_fit$nzero[which(best_cv_fit$lambda == best_cv_fit$lambda.min)]
+  nzero_at_1se <- best_cv_fit$nzero[which(best_cv_fit$lambda == best_cv_fit$lambda.1se)]
+  
+  list(
+    alpha_rmse_df    = alpha_rmse_df,
+    best_alpha_idx   = best_alpha_idx,
+    best_alpha       = best_alpha,
+    best_cv_fit      = best_cv_fit,
+    lambda_df        = lambda_df,
+    nzero_at_min     = nzero_at_min,
+    nzero_at_1se     = nzero_at_1se,
+    n_raw_predictors = n_raw_predictors,
+    n_obs            = length(y),
+    dataset_name     = dataset_name
+  )
+}
+
+# ============================================
+# 2. PANEL BUILDERS
+# ============================================
+
+build_alpha_panel <- function(res, show_y_label = TRUE) {
+  df <- res$alpha_rmse_df
+  best_idx <- res$best_alpha_idx
+  selected <- df[best_idx, ]
+  
+  p <- ggplot(df, aes(x = alpha, y = cv_rmse)) +
+    geom_line(colour = "grey60", linewidth = 0.5) +
+    geom_point(colour = "grey40", size = 2, alpha = 0.7) +
+    geom_errorbar(aes(ymin = cv_rmse - cv_rmse_se, ymax = cv_rmse + cv_rmse_se),
+                  colour = "grey70", alpha = 0.5, width = 0) +
+    geom_point(data = selected, colour = "#E41A1C", size = 3.5, shape = 18) +
+    geom_vline(xintercept = selected$alpha,
+               colour = "#E41A1C", linetype = "dashed", alpha = 0.5) +
+    scale_x_continuous(breaks = seq(0, 1, by = 0.2)) +
+    labs(
+      title = res$dataset_name,
+      subtitle = sprintf("p = %d, n = %d", res$n_raw_predictors, res$n_obs),
+      x = expression(alpha ~ "(mixing parameter)"),
+      y = if (show_y_label) "CV RMSE" else NULL
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      text = element_text(family = "Arial"),
+      plot.title = element_text(face = "bold", size = 13, hjust = 0.5),
+      plot.subtitle = element_text(size = 11, colour = "grey40", hjust = 0.5),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 11),
+      panel.grid.minor = element_blank()
+    )
+  
+  p
+}
+
+build_lambda_panel <- function(res, show_y_label = TRUE) {
+  df <- res$lambda_df
+  cv_fit <- res$best_cv_fit
+  
+  lambda_min_val <- log(cv_fit$lambda.min)
+  lambda_1se_val <- log(cv_fit$lambda.1se)
+  
+  sel_idx <- which.min(abs(df$log_lambda - lambda_1se_val))
+  selected <- df[sel_idx, ]
+  
+  n_breaks <- min(6, nrow(df))
+  break_idx <- seq(1, nrow(df), length.out = n_breaks) %>% round()
+  
+  p <- ggplot(df, aes(x = log_lambda, y = cv_rmse)) +
+    geom_line(colour = "grey60", linewidth = 0.5) +
+    geom_errorbar(aes(ymin = cv_rmse - cv_rmse_se, ymax = cv_rmse + cv_rmse_se),
+                  colour = "grey70", alpha = 0.3, width = 0) +
+    geom_vline(xintercept = lambda_min_val, linetype = "dashed", colour = "grey50", linewidth = 0.4) +
+    geom_vline(xintercept = lambda_1se_val, linetype = "dashed", colour = "#E41A1C", alpha = 0.5, linewidth = 0.4) +
+    geom_point(data = selected, colour = "#E41A1C", size = 3.5, shape = 18) +
+    annotate("text", x = lambda_min_val, y = max(df$cv_rmse) * 0.98,
+             label = sprintf("p==%d", res$nzero_at_min),
+             parse = TRUE, hjust = 1.1, size = 2.5, colour = "grey40") +
+    annotate("text", x = lambda_1se_val, y = max(df$cv_rmse) * 0.98,
+             label = sprintf("p==%d", res$nzero_at_1se),
+             parse = TRUE, hjust = -0.1, size = 2.5, colour = "#E41A1C") +
+    scale_x_continuous(
+      sec.axis = sec_axis(
+        transform = ~ .,
+        breaks = df$log_lambda[break_idx],
+        labels = df$nzero[break_idx]
+      )
+    ) +
+    labs(
+      x = expression(log(lambda)),
+      y = if (show_y_label) "CV RMSE" else NULL,
+      subtitle = sprintf("\u03b1 = %.1f  |  \u03bb.1se: %d coefs", res$best_alpha, res$nzero_at_1se)
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      text = element_text(family = "Arial"),
+      plot.subtitle = element_text(size = 11, colour = "grey40", hjust = 0.5),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 11),
+      axis.title.x.top = element_blank(),
+      axis.text.x.top = element_text(size = 7),
+      panel.grid.minor = element_blank()
+    )
+  
+  p
+}
+
+# ============================================
+# 3. HELPER: Assemble a figure from a subset of results
+# ============================================
+
+assemble_tuning_figure <- function(tuning_results, add_title = TRUE) {
+  n <- length(tuning_results)
+  
+  alpha_panels <- lapply(seq_len(n), function(i) {
+    build_alpha_panel(tuning_results[[i]], show_y_label = (i == 1))
+  })
+  
+  lambda_panels <- lapply(seq_len(n), function(i) {
+    build_lambda_panel(tuning_results[[i]], show_y_label = (i == 1))
+  })
+  
+  alpha_panels[[1]] <- alpha_panels[[1]] +
+    labs(tag = "A") +
+    theme(plot.tag = element_text(face = "bold", family = "Arial", size = 14))
+  
+  lambda_panels[[1]] <- lambda_panels[[1]] +
+    labs(tag = "B") +
+    theme(plot.tag = element_text(face = "bold", family = "Arial", size = 14))
+  
+  alpha_row <- wrap_plots(alpha_panels, nrow = 1)
+  lambda_row <- wrap_plots(lambda_panels, nrow = 1)
+  
+  combined <- alpha_row / lambda_row
+  
+  if (add_title) {
+    combined <- combined +
+      plot_annotation(
+        title = "Elastic Net Hyperparameter Tuning: QRISK3",
+        subtitle = "A: \u03b1 selected by minimum CV RMSE | B: \u03bb selected by one-SE rule at chosen \u03b1",
+        theme = theme(
+          plot.title = element_text(face = "bold", family = "Arial", size = 14),
+          plot.subtitle = element_text(family = "Arial", size = 10, colour = "grey40")
+        )
+      )
+  }
+  
+  combined
+}
+
+# ============================================
+# 4. GENERATE TUNING DATA FOR ALL DATASETS
+# ============================================
+
+dataset_configs <- list(
+  list(df = score_specific_datasets[["QRISK3_risk"]], name = "Score-Specific"),
+  list(df = datasets_list[["all_data"]], name = "Full Predictor Set"),
+  list(df = datasets_list[["body_composition"]], name = "Body Composition"),
+  list(df = datasets_list[["sociodemographics_lifestyle"]], name = "Sociodemographics"),
+  list(df = datasets_list[["clinical_risk_factors"]], name = "Clinical Risk Factors"),
+  list(df = datasets_list[["lipids"]], name = "Lipids"),
+  list(df = datasets_list[["fatty_acids"]], name = "Fatty Acids"),
+  list(df = datasets_list[["urine_nmr"]], name = "Urine NMR")
+)
+
+tuning_results_all <- lapply(dataset_configs, function(cfg) {
+  cat(sprintf("Generating tuning data for QRISK3 ~ %s...\n", cfg$name))
+  extract_tuning_data(
+    df_raw = cfg$df,
+    outcome_col = "QRISK3_risk",
+    dataset_name = cfg$name,
+    covariate_cols = COVARIATE_COLS,
+    CVD_scores_vec = CVD_scores,
+    alpha_grid = seq(0, 1, by = 0.1),
+    nfolds = 10, seed = 42
+  )
+})
+
+# ============================================
+# 5. PLOT 1: ALL 8 DATASETS (exploratory)
+# ============================================
+
+plot_all <- assemble_tuning_figure(tuning_results_all, add_title = TRUE)
+
+ggsave(
+  filename = save_output("tuning_diagnostics_QRISK3_all.png"),
+  plot = plot_all,
+  width = 24, height = 9, dpi = 300
+)
+
+ggsave(
+  filename = save_output("tuning_diagnostics_QRISK3_all.pdf"),
+  plot = plot_all,
+  width = 24, height = 9, dpi = 300,
+  device = cairo_pdf
+)
+
+cat("Saved: tuning_diagnostics_QRISK3_all (.png + .pdf)\n")
+
+# ============================================
+# 6. PLOT 2: 5 SELECTED DATASETS (thesis)
+# ============================================
+
+# Indices: 1=Score-Specific, 2=Full Predictor Set, 3=Body Composition,
+#          4=Sociodemographics, 6=Lipids
+thesis_indices <- c(1, 2, 3, 4, 6)
+tuning_results_thesis <- tuning_results_all[thesis_indices]
+
+plot_thesis <- assemble_tuning_figure(tuning_results_thesis, add_title = FALSE)
+
+ggsave(
+  filename = save_output("tuning_diagnostics_QRISK3_thesis.png"),
+  plot = plot_thesis,
+  width = 16, height = 7, dpi = 300
+)
+
+ggsave(
+  filename = save_output("tuning_diagnostics_QRISK3_thesis.pdf"),
+  plot = plot_thesis,
+  width = 16, height = 7, dpi = 300,
+  device = cairo_pdf
+)
+
+cat("Saved: tuning_diagnostics_QRISK3_thesis (.png + .pdf)\n")
+
+
+
+
+
+
+
 
 # ============================================
 # 11. VISUALIZE NON-ZERO COEFFICIENTS
@@ -1768,7 +2298,7 @@ calculate_single_feature_importance <- function(feat, X_test, y_test,
   for (p in 1:n_permutations) {
     X_test_perm <- X_test
     X_test_perm[, feat_idx] <- sample(X_test_perm[, feat_idx])
-    y_pred_perm <- as.numeric(predict(cv_fit, newx = X_test_perm, s = "lambda.min"))
+    y_pred_perm <- as.numeric(predict(cv_fit, newx = X_test_perm, s = "lambda.1se"))
     mse_permuted[p] <- mean((y_test - y_pred_perm)^2)
   }
   
@@ -1789,7 +2319,7 @@ calculate_fold_importance <- function(X_train, X_test, y_train, y_test,
                                       n_cores = 1, seed = 42) {
   set.seed(seed)
   
-  y_pred_baseline <- as.numeric(predict(cv_fit, newx = X_test, s = "lambda.min"))
+  y_pred_baseline <- as.numeric(predict(cv_fit, newx = X_test, s = "lambda.1se"))
   mse_baseline <- mean((y_test - y_pred_baseline)^2)
   
   features_to_test <- intersect(features_to_test, colnames(X_test))
@@ -1920,7 +2450,7 @@ run_permutation_importance <- function(df_raw, outcome_col, exclude_cols,
       cv_fit <- tryCatch(
         cv.glmnet(x = X_train, y = y_train, alpha = a,
                   penalty.factor = pen_factor,
-                  nfolds = min(5, nfolds - 1),
+                  nfolds = nfolds,
                   type.measure = "mse", standardize = FALSE, family = "gaussian"),
         error = function(e) NULL
       )
@@ -2421,7 +2951,7 @@ importance_results_common <- run_permutation_importance_batch(
   datasets_list = datasets_list,
   score_specific_datasets = score_specific_datasets,
   n_permutations = 1000, nfolds = 5, n_cores = CPUS,
-  covariate_cols = COVARIATE_COLS_COMMON, seed = 42,
+  covariate_cols = COVARIATE_COLS, seed = 42,
   models_to_run = models_common_run
 )
 
@@ -2649,7 +3179,7 @@ create_all_importance_tables <- function(importance_results,
   
   if (is.null(dataset_labels)) {
     dataset_labels <- c(
-      "all_data" = "All Predictors",
+      "all_data" = "Full predictor set",
       "lipids" = "Lipids",
       "fatty_acids" = "Fatty Acids",
       "urine_nmr" = "Urine NMR Metabolites",
@@ -2902,7 +3432,7 @@ create_significant_tables <- function(importance_results, coefficient_directions
   importance_df <- importance_results$aggregated
   if (is.null(dataset_labels)) {
     dataset_labels <- c(
-      "all_data" = "All Predictors", "lipids" = "Lipids",
+      "all_data" = "Full predictor set", "lipids" = "Lipids",
       "fatty_acids" = "Fatty Acids", "urine_nmr" = "Urine NMR Metabolites",
       "body_composition" = "Body Composition",
       "clinical_risk_factors" = "Clinical Measurements & Supplementary Biomarkers",
@@ -3549,10 +4079,10 @@ create_all_importance_barplots <- function(importance_results,
   
   if (is.null(dataset_labels)) {
     dataset_labels <- c(
-      "all_data" = "All Predictors", "lipids" = "Lipids",
+      "all_data" = "Full predictor set", "lipids" = "Lipids",
       "fatty_acids" = "Fatty Acids", "urine_nmr" = "Urine NMR Metabolites",
       "body_composition" = "Body Composition",
-      "clinical_risk_factors" = "Clinical Risk Factors",
+      "clinical_risk_factors" = "Clinical Measurements & Supplementary Biomarkers",
       "sociodemographics_lifestyle" = "Sociodemographics & Lifestyle"
     )
   }
