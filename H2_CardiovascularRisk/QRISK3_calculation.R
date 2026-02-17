@@ -184,9 +184,10 @@ shapiro.test(QRISK3_sample_ID$QRISK3_risk) # does the data follow a normal distr
 summary(QRISK3_sample_ID$QRISK3_risk)
 
 
+###############################################################################
+###############################################################################
 
-
-### --------- Preparing for a Linear Regression Model -----------###
+### --------- Preparing the risk_factor dataset -----------###
 # Load the data
 df_risk_factors <- read_csv("risk_factors.csv")
 
@@ -263,7 +264,7 @@ mutate(
 # add the QRISK3_risk results to the df with risk_factors
 df_patient_risk_for_lm <- df_patient_risk_for_lm %>%
   rename(Sample_ID = PatientID) %>%
-  inner_join(QRISK3_sample_ID, by = "Sample_ID")
+  left_join(QRISK3_sample_ID, by = "Sample_ID")
 
 df_patient_risk_for_lm %>%
   summarise(
@@ -620,3 +621,53 @@ plot(df_correlate_fatfreemass_weight$Fat.free.mass,
      xlab = "Fat-free mass (kg)", ylab = "Weight (kg)",
      main = "Fat-free Mass vs Weight")
 abline(lm(Weight_kg ~ Fat.free.mass, data = df_correlate_fatfreemass_weight), col = "red")
+
+
+
+###############################################################################
+## BMI Calculation (concidering RACE)
+###############################################################################
+df_bmi <- df_patient_risk_for_lm %>%
+  select(PatientID, BMI) %>%
+  full_join(qrisk_input %>% select(PatientID, EthnicityCodeQRISK3), by = "PatientID") %>%
+  mutate(
+    BMI = as.numeric(BMI),
+    EthnicityCodeQRISK3 = as.numeric(EthnicityCodeQRISK3),
+    bmi_category = case_when(
+      is.na(BMI) | is.na(EthnicityCodeQRISK3) ~ NA_character_,
+      # Standard thresholds (White/Not stated: codes 1 and 9)
+      EthnicityCodeQRISK3 %in% c(1, 9) & BMI >= 40   ~ "Obesity Class 3",
+      EthnicityCodeQRISK3 %in% c(1, 9) & BMI >= 35   ~ "Obesity Class 2",
+      EthnicityCodeQRISK3 %in% c(1, 9) & BMI >= 30   ~ "Obesity Class 1",
+      EthnicityCodeQRISK3 %in% c(1, 9) & BMI >= 25   ~ "Overweight",
+      EthnicityCodeQRISK3 %in% c(1, 9) & BMI >= 18.5 ~ "Normal weight",
+      EthnicityCodeQRISK3 %in% c(1, 9)               ~ "Underweight",
+      # Lower thresholds (South Asian, Black, other minority ethnic groups: codes 2-8)
+      EthnicityCodeQRISK3 %in% 2:8 & BMI >= 37.5 ~ "Obesity Class 3",
+      EthnicityCodeQRISK3 %in% 2:8 & BMI >= 32.5 ~ "Obesity Class 2",
+      EthnicityCodeQRISK3 %in% 2:8 & BMI >= 27.5 ~ "Obesity Class 1",
+      EthnicityCodeQRISK3 %in% 2:8 & BMI >= 23   ~ "Overweight",
+      EthnicityCodeQRISK3 %in% 2:8 & BMI >= 18.5 ~ "Normal weight",
+      EthnicityCodeQRISK3 %in% 2:8                ~ "Underweight",
+      TRUE ~ NA_character_
+    ),
+    bmi_category = factor(bmi_category,
+                          levels = c("Underweight", "Normal weight", "Overweight",
+                                     "Obesity Class 1", "Obesity Class 2", "Obesity Class 3"))
+  )
+
+# Summary table
+bmi_summary <- df_bmi %>%
+  filter(!is.na(bmi_category)) %>%
+  count(bmi_category, .drop = FALSE) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+print(bmi_summary)
+
+# Breakdown by ethnicity group
+bmi_by_ethnicity <- df_bmi %>%
+  filter(!is.na(bmi_category)) %>%
+  mutate(eth_group = ifelse(EthnicityCodeQRISK3 %in% c(1, 9), "Standard (1,9)", "Lower threshold (2-8)")) %>%
+  count(eth_group, bmi_category, .drop = FALSE) %>%
+  group_by(eth_group) %>%
+  mutate(pct = round(n / sum(n) * 100, 1))
+print(bmi_by_ethnicity)
