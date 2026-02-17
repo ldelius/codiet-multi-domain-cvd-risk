@@ -79,6 +79,12 @@ Associations between predictors and CVD scores reported in Chapter 3.2 of the th
 The same analysis, additionally adjusting for Age as a fixed effect, was conducted in: [`FixedEffectAge.R`](FixedEffectAge.R).
 
 
+#### Chapter 3.3 – ML analysis
+
+ML comparison that was used in thesis is stored in [`ML_comp_parameter_tuning.R`](ML_comp_parameter_tuning.R). Previous comparison with 20-hould out participants and all datasets (not shown in thesis) are stored in [`tidymodels_comparison.R`](tidymodels_comparison.R).
+- Key pipline parameter: XXX
+
+
 ## Reproducibility
 
 - R version: X.X.X 
