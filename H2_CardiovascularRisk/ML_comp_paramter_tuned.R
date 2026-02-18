@@ -240,23 +240,21 @@ datasets_list <- lapply(datasets_list, sanitize_df)
 score_specific_datasets <- lapply(score_specific_datasets, sanitize_df)
 
 # ============================================
-# 6. Create Score-specific + Block combinations
+# 6. Score-specific + Block combinations (UNUSED — kept for reference)
 # ============================================
 
-cat("\n=== CREATING SCORE-SPECIFIC + BLOCK COMBINATIONS ===\n")
-
-score_plus_block_datasets <- list()
-for (score in names(score_specific_datasets)) {
-  for (block in names(datasets_list)) {
-    combo_name <- paste0(score, "_plus_", block)
-    score_plus_block_datasets[[combo_name]] <- build_score_plus_block(
-      score, block, score_specific_datasets, datasets_list
-    )
-  }
-}
-cat(sprintf("Created %d combinations\n", length(score_plus_block_datasets)))
-
-
+# cat("\n=== CREATING SCORE-SPECIFIC + BLOCK COMBINATIONS ===\n")
+# 
+# score_plus_block_datasets <- list()
+# for (score in names(score_specific_datasets)) {
+#   for (block in names(datasets_list)) {
+#     combo_name <- paste0(score, "_plus_", block)
+#     score_plus_block_datasets[[combo_name]] <- build_score_plus_block(
+#       score, block, score_specific_datasets, datasets_list
+#     )
+#   }
+# }
+# cat(sprintf("Created %d combinations\n", length(score_plus_block_datasets)))
 
 
 # ============================================
@@ -467,19 +465,27 @@ run_nested_cv <- function(df, outcome, dataset_name,
         train_preds <- predict(final_fit, new_data = outer_train) %>%
           bind_cols(outer_train %>% select(all_of(outcome)))
         
+        # ---- FIX: Classic R² and Q² (1 - SS_res/SS_tot) ----
+        train_mean <- mean(train_preds[[outcome]], na.rm = TRUE)
+        
+        # Training R²
+        ss_res_train <- sum((train_preds[[outcome]] - train_preds$.pred)^2, na.rm = TRUE)
+        ss_tot_train <- sum((train_preds[[outcome]] - train_mean)^2, na.rm = TRUE)
+        train_rsq <- 1 - ss_res_train / ss_tot_train
+        
+        # Q² (held-out test data, using TRAINING mean)
+        ss_res_test <- sum((test_preds[[outcome]] - test_preds$.pred)^2, na.rm = TRUE)
+        ss_tot_test <- sum((test_preds[[outcome]] - train_mean)^2, na.rm = TRUE)
+        test_rsq <- 1 - ss_res_test / ss_tot_test
+        
         test_mae  <- mean(abs(test_preds$.pred - test_preds[[outcome]]), na.rm = TRUE)
         test_rmse <- sqrt(mean((test_preds$.pred - test_preds[[outcome]])^2, na.rm = TRUE))
-        test_rsq  <- NA
-        if (sd(test_preds$.pred, na.rm = TRUE) > 0.001) {
-          test_rsq <- cor(test_preds$.pred, test_preds[[outcome]], use = "complete.obs")^2
-        }
         
         train_mae  <- mean(abs(train_preds$.pred - train_preds[[outcome]]), na.rm = TRUE)
         train_rmse <- sqrt(mean((train_preds$.pred - train_preds[[outcome]])^2, na.rm = TRUE))
-        train_rsq  <- cor(train_preds$.pred, train_preds[[outcome]], use = "complete.obs")^2
         
         test_cal_slope <- test_cal_intercept <- NA
-        if (!is.na(test_rsq)) {
+        if (!is.na(test_rsq) && is.finite(test_rsq)) {
           cal_model <- lm(as.formula(paste(outcome, "~ .pred")), data = test_preds)
           test_cal_intercept <- coef(cal_model)[1]
           test_cal_slope     <- coef(cal_model)[2]
@@ -529,17 +535,15 @@ run_nested_cv <- function(df, outcome, dataset_name,
       cv_rmse_sd = round(sd(test_rmse, na.rm = TRUE), 3),
       cv_cal_slope     = round(mean(test_cal_slope, na.rm = TRUE), 3),
       cv_cal_intercept = round(mean(test_cal_intercept, na.rm = TRUE), 3),
-      rsq_ratio  = round(
-        ifelse(mean(test_rsq, na.rm = TRUE) > 0.01,
-               mean(train_rsq, na.rm = TRUE) / mean(test_rsq, na.rm = TRUE), NA), 2),
+      # FIX: Q²/R² ratio (was R²/Q²)
+      q2_r2_ratio  = round(
+        ifelse(mean(train_rsq, na.rm = TRUE) > 0.01,
+               mean(test_rsq, na.rm = TRUE) / mean(train_rsq, na.rm = TRUE), NA), 2),
       .groups = "drop"
     ) %>%
     mutate(dataset = dataset_name, outcome = outcome,
            n_predictors = n_predictors, n_total = n_total) %>%
     select(dataset, outcome, model, n_total, n_train, n_test, n_predictors, everything())
-  
-  # ---- Select best model by outer-fold MAE ----
-  best_model_name <- NA
   
   # ---- Final refit on full data for tuning diagnostics ----
   cat("    Final refit on full data for tuning plots...\n")
@@ -548,7 +552,6 @@ run_nested_cv <- function(df, outcome, dataset_name,
   list(
     summary_metrics    = summary_metrics,
     outer_fold_metrics = all_outer_metrics,
-    best_model         = best_model_name,
     final_tuning       = final_inner,
     dataset_name       = dataset_name,
     outcome            = outcome
@@ -679,7 +682,7 @@ model_rankings <- all_metrics %>%
     times_best     = sum(rank == 1),
     mean_q2        = round(mean(q2, na.rm = TRUE), 3),
     mean_cv_mae    = round(mean(cv_mae, na.rm = TRUE), 3),
-    mean_rsq_ratio = round(mean(rsq_ratio, na.rm = TRUE), 2),
+    mean_q2_r2_ratio = round(mean(q2_r2_ratio, na.rm = TRUE), 2),
     .groups = "drop"
   ) %>%
   arrange(mean_rank)
@@ -703,7 +706,7 @@ qs2::qs_save(list(
 
 
 # ============================================
-# 14. Combined comparison table (with R² ratio)
+# 14. Combined comparison table (with Q²/R² ratio)
 # ============================================
 
 cat("\n=== GENERATING COMBINED TABLE ===\n")
@@ -735,7 +738,8 @@ format_block <- function(metrics_df, score, dataset_name) {
       `Train R²` = sprintf("%.3f", train_rsq),
       `Q²`       = sprintf("%.3f \u00b1 %.3f", q2, q2_sd),
       `CV MAE`   = sprintf("%.3f \u00b1 %.3f", cv_mae, cv_mae_sd),
-      `R² Ratio` = ifelse(!is.na(rsq_ratio), sprintf("%.2f", rsq_ratio), "\u2013")
+      # FIX: Q²/R² ratio instead of R²/Q²
+      `Q²/R² Ratio` = ifelse(!is.na(q2_r2_ratio), sprintf("%.2f", q2_r2_ratio), "\u2013")
     )
 }
 
@@ -790,13 +794,13 @@ for (pair in score_pairs) {
       TrainR2_L = df_left$`Train R²`,
       Q2_L      = df_left$`Q²`,
       CVMAE_L   = df_left$`CV MAE`,
-      Ratio_L   = df_left$`R² Ratio`,
+      Ratio_L   = df_left$`Q²/R² Ratio`,
       Spacer    = rep("", nrow(df_left)),
       Model_R   = df_right$Model,
       TrainR2_R = df_right$`Train R²`,
       Q2_R      = df_right$`Q²`,
       CVMAE_R   = df_right$`CV MAE`,
-      Ratio_R   = df_right$`R² Ratio`
+      Ratio_R   = df_right$`Q²/R² Ratio`
     )
     all_rows <- bind_rows(all_rows, data_rows)
   }
@@ -805,10 +809,10 @@ for (pair in score_pairs) {
 ft <- flextable(all_rows) %>%
   set_header_labels(
     Model_L = "Model", TrainR2_L = "Train R\u00b2", Q2_L = "Q\u00b2",
-    CVMAE_L = "CV MAE", Ratio_L = "R\u00b2 Ratio",
+    CVMAE_L = "CV MAE", Ratio_L = "Q\u00b2/R\u00b2",
     Spacer = "",
     Model_R = "Model", TrainR2_R = "Train R\u00b2", Q2_R = "Q\u00b2",
-    CVMAE_R = "CV MAE", Ratio_R = "R\u00b2 Ratio"
+    CVMAE_R = "CV MAE", Ratio_R = "Q\u00b2/R\u00b2"
   ) %>%
   font(fontname = "Arial", part = "all") %>%
   fontsize(size = 9, part = "body") %>%
@@ -846,9 +850,10 @@ print(doc, target = file.path(output_dir, "Table_Model_Comparison_NestedCV.docx"
 cat("Saved Table_Model_Comparison_NestedCV.docx\n")
 
 # ============================================
-# 15. Bar plots
+# 15. Bar plots and tuning diagnostics
 # ============================================
 
+# ---- Shared labels and colours (defined once) ----
 model_labels <- c(elastic_net = "Elastic Net", sparse_pls = "Sparse PLS",
                   random_forest = "Random Forest", xgboost = "XGBoost",
                   svm = "SVM-RBF", knn = "k-NN")
@@ -860,10 +865,19 @@ model_colors <- c("Elastic Net" = "#E69F00", "Sparse PLS" = "#56B4E9",
                   "Random Forest" = "#009E73", "XGBoost" = "#F0E442",
                   "SVM-RBF" = "#0072B2", "k-NN" = "#D55E00")
 
+param_display_names <- c(
+  penalty = "Penalty (\u03bb)", num_comp = "Number of Components",
+  mtry = "Variables per Split (mtry)", learn_rate = "Learning Rate",
+  cost = "Cost (C)", neighbors = "Neighbors (k)"
+)
+
+model_plot_order <- c("elastic_net", "sparse_pls", "random_forest",
+                      "xgboost", "svm", "knn")
+
 score_specific_names <- c("QRISK3_risk_specific", "SCORE2_score_specific",
                           "frs_10y_specific", "ascvd_10y_specific")
 
-# --- Score-specific ---
+# ---- Bar plots: Score-specific ----
 ss_data <- all_metrics %>%
   filter(dataset %in% score_specific_names, outcome %in% names(outcome_labels)) %>%
   mutate(outcome_label = factor(outcome_labels[outcome], levels = outcome_labels),
@@ -897,7 +911,7 @@ combined_ss <- (p1 | p2) +
 ggsave(file.path(output_dir, "barplot_score_specific.png"), combined_ss, width = 12, height = 6, dpi = 300)
 ggsave(file.path(output_dir, "barplot_score_specific.pdf"), combined_ss, width = 12, height = 6)
 
-# --- Full predictor set ---
+# ---- Bar plots: Full predictor set ----
 fps_data <- all_metrics %>%
   filter(dataset == "full_predictor_set", outcome %in% names(outcome_labels)) %>%
   mutate(outcome_label = factor(outcome_labels[outcome], levels = outcome_labels),
@@ -946,19 +960,6 @@ primary_tuning_params <- c(
   recipe_xgboost       = "learn_rate",
   recipe_svm           = "cost",
   recipe_knn           = "neighbors"
-)
-
-model_labels <- c(elastic_net = "Elastic Net", sparse_pls = "Sparse PLS",
-                  random_forest = "Random Forest", xgboost = "XGBoost",
-                  svm = "SVM-RBF", knn = "k-NN")
-
-outcome_labels <- c(QRISK3_risk = "QRISK3 Risk", SCORE2_score = "SCORE2 Risk",
-                    frs_10y = "Framingham 10-year Risk", ascvd_10y = "ASCVD 10-year Risk")
-
-param_display_names <- c(
-  penalty = "Penalty (\u03bb)", num_comp = "Number of Components",
-  mtry = "Variables per Split (mtry)", learn_rate = "Learning Rate",
-  cost = "Cost (C)", neighbors = "Neighbors (k)"
 )
 
 # ---- Extract tuning data from final full-data refit ----
@@ -1042,7 +1043,7 @@ if (nrow(all_tuning_data) > 0) {
     p
   }
   
-  # ---- Single-score plot helper (thesis style) ----
+  # ---- Thesis-style single-score tuning plot (defined once) ----
   create_thesis_tuning_plot <- function(data, model_name) {
     model_data <- data %>% filter(model == model_name)
     if (nrow(model_data) == 0) return(ggplot() + theme_void())
@@ -1066,21 +1067,18 @@ if (nrow(all_tuning_data) > 0) {
         plot.title       = element_text(face = "bold", size = 18, hjust = 0.5),
         axis.title       = element_text(size = 15),
         axis.text        = element_text(size = 13),
+        strip.text       = element_text(size = 14, face = "bold"),
         panel.grid.minor = element_blank()
       )
     
     if (param_name %in% c("penalty", "cost")) {
-      p <- p + scale_x_continuous(
-        trans = "log10",
+      p <- p + scale_x_log10(
         breaks = 10^seq(-10, 10, by = 2),
         labels = function(x) parse(text = paste0("10^", log10(x)))
       )
     }
     p
   }
-  
-  model_plot_order <- c("elastic_net", "sparse_pls", "random_forest",
-                        "xgboost", "svm", "knn")
   
   # ---- 16a. Per-dataset overview plots ----
   for (ds_pattern in c("_specific", "full_predictor_set")) {
@@ -1174,96 +1172,196 @@ if (nrow(all_tuning_data) > 0) {
   cat("  No tuning data available\n")
 }
 
-cat("\n=== ANALYSIS COMPLETE ===\n")
-
-
-
-
 # ============================================
-# QRISK3 Tuning Parameter Plot (thesis version)
+# 17. Selected hyperparameter table
 # ============================================
 
-# Extract QRISK3 tuning data
-qrisk3_tuning <- all_tuning_data %>%
-  filter(outcome == "QRISK3_risk")
+cat("\n=== SELECTED HYPERPARAMETER TABLE ===\n")
 
-model_plot_order <- c("elastic_net", "sparse_pls", "random_forest",
-                      "xgboost", "svm", "knn")
-
-model_labels <- c(elastic_net = "Elastic Net", sparse_pls = "Sparse PLS",
-                  random_forest = "Random Forest", xgboost = "XGBoost",
-                  svm = "SVM-RBF", knn = "k-NN")
-
-param_display_names <- c(
-  penalty = "Penalty (\u03bb)", num_comp = "Number of Components",
-  mtry = "Variables per Split (mtry)", learn_rate = "Learning Rate",
-  cost = "Cost (C)", neighbors = "Neighbors (k)"
+# Parameter display names for the table
+param_labels <- c(
+  penalty        = "\u03bb (penalty)",
+  mixture        = "\u03b1 (mixture)",
+  num_comp       = "Components",
+  predictor_prop = "Predictor prop.",
+  trees          = "Trees",
+  mtry           = "mtry",
+  min_n          = "Min node size",
+  tree_depth     = "Tree depth",
+  loss_reduction = "Loss reduction",
+  sample_size    = "Subsample prop.",
+  learn_rate     = "Learning rate",
+  cost           = "Cost (C)",
+  rbf_sigma      = "\u03c3 (RBF)",
+  neighbors      = "Neighbours (k)",
+  weight_func    = "Weight function",
+  dist_power     = "Minkowski p"
 )
 
-create_thesis_tuning_plot <- function(data, model_name) {
-  model_data <- data %>% filter(model == model_name)
-  if (nrow(model_data) == 0) return(ggplot() + theme_void())
+# Define which parameters each model has (in display order)
+model_param_map <- list(
+  elastic_net   = c("penalty", "mixture"),
+  sparse_pls    = c("num_comp", "predictor_prop"),
+  random_forest = c("trees", "mtry", "min_n"),
+  xgboost       = c("trees", "tree_depth", "min_n", "loss_reduction",
+                    "sample_size", "mtry", "learn_rate"),
+  svm           = c("cost", "rbf_sigma"),
+  knn           = c("neighbors", "weight_func", "dist_power")
+)
+
+# Extract best params from final_tuning (full-data refit) for each task
+extract_best_params <- function(result) {
+  if (is.null(result$final_tuning)) return(NULL)
+  best_params <- result$final_tuning$best_params
   
-  param_name   <- unique(model_data$tuning_param_name)
-  x_label      <- param_display_names[param_name]
-  selected_pts <- model_data %>% filter(is_selected)
-  
-  p <- ggplot(model_data, aes(x = tuning_param_value, y = cv_rmse)) +
-    geom_line(colour = "grey60", linewidth = 0.5) +
-    geom_point(colour = "grey40", size = 2, alpha = 0.7) +
-    geom_errorbar(aes(ymin = cv_rmse - cv_rmse_se, ymax = cv_rmse + cv_rmse_se),
-                  colour = "grey70", alpha = 0.5, width = 0) +
-    geom_point(data = selected_pts, colour = "#E41A1C", size = 3.5, shape = 18) +
-    geom_vline(data = selected_pts, aes(xintercept = tuning_param_value),
-               colour = "#E41A1C", linetype = "dashed", alpha = 0.5) +
-    labs(title = model_labels[model_name], x = x_label, y = "Inner CV RMSE") +
-    theme_minimal(base_size = 16) +
-    theme(
-      text             = element_text(family = "Arial", size = 16),
-      plot.title       = element_text(face = "bold", size = 18, hjust = 0.5),
-      axis.title       = element_text(size = 15),
-      axis.text        = element_text(size = 13),
-      strip.text       = element_text(size = 14, face = "bold"),
-      panel.grid.minor = element_blank()
+  map_dfr(names(best_params), function(model_name) {
+    bp <- best_params[[model_name]]
+    if (is.null(bp)) return(NULL)
+    
+    expected_params <- model_param_map[[model_name]]
+    
+    param_values <- sapply(expected_params, function(p) {
+      if (p %in% names(bp)) {
+        val <- bp[[p]]
+        if (is.numeric(val)) {
+          if (abs(val) < 0.001 & val != 0) {
+            sprintf("%.2e", val)
+          } else if (val == round(val)) {
+            sprintf("%d", as.integer(val))
+          } else {
+            sprintf("%.4f", val)
+          }
+        } else {
+          as.character(val)
+        }
+      } else {
+        NA_character_
+      }
+    })
+    
+    tibble(
+      dataset  = result$dataset_name,
+      outcome  = result$outcome,
+      model    = model_name,
+      param    = expected_params,
+      param_label = param_labels[expected_params],
+      value    = param_values
     )
-  
-  if (param_name %in% c("penalty", "cost")) {
-    p <- p + scale_x_log10(
-      breaks = 10^seq(-10, 10, by = 2),
-      labels = function(x) parse(text = paste0("10^", log10(x)))
-    )
-  }
-  
-  p
+  })
 }
 
-# Row A: Score-specific inputs
-ss_data <- qrisk3_tuning %>% filter(dataset == "QRISK3_risk_specific")
+all_best_params <- map_dfr(all_results, extract_best_params)
 
-# Row B: Full predictor set
-fps_data <- qrisk3_tuning %>% filter(dataset == "full_predictor_set")
+if (nrow(all_best_params) > 0) {
+  
+  # ---- Build one table per dataset type ----
+  for (ds_type in c("score_specific", "full_predictor_set")) {
+    
+    if (ds_type == "score_specific") {
+      ds_data <- all_best_params %>% filter(str_detect(dataset, "_specific"))
+      ds_title <- "Score-Specific Inputs"
+      ds_suffix <- "score_specific"
+    } else {
+      ds_data <- all_best_params %>% filter(dataset == "full_predictor_set")
+      ds_title <- "Full Predictor Set"
+      ds_suffix <- "full_predictor_set"
+    }
+    
+    if (nrow(ds_data) == 0) next
+    
+    # Pivot: rows = model + parameter, columns = outcome scores
+    score_order <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
+    score_labels_short <- c(
+      QRISK3_risk = "QRISK3", SCORE2_score = "SCORE2",
+      frs_10y = "Framingham", ascvd_10y = "ASCVD"
+    )
+    
+    model_order_local <- c("elastic_net", "sparse_pls", "random_forest",
+                           "xgboost", "svm", "knn")
+    model_labels_local <- c(
+      elastic_net = "Elastic Net", sparse_pls = "Sparse PLS",
+      random_forest = "Random Forest", xgboost = "XGBoost",
+      svm = "SVM-RBF", knn = "k-NN"
+    )
+    
+    # Build table rows
+    table_rows <- tibble()
+    model_header_indices <- c()
+    
+    for (m in model_order_local) {
+      m_data <- ds_data %>% filter(model == m)
+      if (nrow(m_data) == 0) next
+      
+      # Model header row
+      header_row <- tibble(Parameter = model_labels_local[m])
+      for (s in score_order) {
+        header_row[[score_labels_short[s]]] <- ""
+      }
+      model_header_indices <- c(model_header_indices, nrow(table_rows) + 1)
+      table_rows <- bind_rows(table_rows, header_row)
+      
+      # Parameter rows
+      params_for_model <- model_param_map[[m]]
+      for (p in params_for_model) {
+        param_row <- tibble(Parameter = paste0("    ", param_labels[p]))
+        for (s in score_order) {
+          val <- m_data %>% filter(outcome == s, param == p) %>% pull(value)
+          param_row[[score_labels_short[s]]] <- if (length(val) == 1 && !is.na(val)) val else "\u2013"
+        }
+        table_rows <- bind_rows(table_rows, param_row)
+      }
+    }
+    
+    # Create flextable
+    ft_params <- flextable(table_rows) %>%
+      font(fontname = "Arial", part = "all") %>%
+      fontsize(size = 9, part = "body") %>%
+      fontsize(size = 9, part = "header") %>%
+      bold(part = "header") %>%
+      bold(i = model_header_indices, j = 1, part = "body") %>%
+      italic(i = setdiff(seq_len(nrow(table_rows)), model_header_indices),
+             j = 1, part = "body") %>%
+      align(j = 1, align = "left", part = "all") %>%
+      align(j = 2:5, align = "center", part = "all") %>%
+      width(j = 1, width = 1.8) %>%
+      width(j = 2:5, width = 1.2) %>%
+      border_remove() %>%
+      hline_top(border = fp_border(width = 2), part = "all") %>%
+      hline_bottom(border = fp_border(width = 2), part = "body") %>%
+      hline(i = 1, border = fp_border(width = 1), part = "header")
+    
+    for (idx in model_header_indices) {
+      ft_params <- ft_params %>%
+        hline(i = idx, border = fp_border(width = 0.5, color = "grey60"), part = "body")
+    }
+    
+    # Save
+    doc_params <- read_docx() %>%
+      body_add_par(paste("Selected Hyperparameters:", ds_title),
+                   style = "heading 2") %>%
+      body_add_flextable(value = ft_params)
+    print(doc_params, target = file.path(output_dir,
+                                         paste0("Table_Selected_Hyperparameters_", ds_suffix, ".docx")))
+    cat(sprintf("  Saved Table_Selected_Hyperparameters_%s.docx\n", ds_suffix))
+  }
+  
+  # ---- Also save as Excel for reference ----
+  params_wide <- all_best_params %>%
+    filter(outcome %in% c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")) %>%
+    mutate(
+      model_label = model_labels[model],
+      outcome_label = c(QRISK3_risk = "QRISK3", SCORE2_score = "SCORE2",
+                        frs_10y = "Framingham", ascvd_10y = "ASCVD")[outcome]
+    ) %>%
+    select(dataset, outcome_label, model_label, param_label, value) %>%
+    pivot_wider(names_from = outcome_label, values_from = value)
+  
+  write_xlsx(list(Selected_Hyperparameters = params_wide),
+             file.path(output_dir, "selected_hyperparameters.xlsx"))
+  cat("  Saved selected_hyperparameters.xlsx\n")
+  
+} else {
+  cat("  No tuning results available for hyperparameter table\n")
+}
 
-row_a_plots <- lapply(model_plot_order, function(m) create_thesis_tuning_plot(ss_data, m))
-row_b_plots <- lapply(model_plot_order, function(m) create_thesis_tuning_plot(fps_data, m))
-
-# Add A/B labels only to first plot in each row
-# Replace the annotate lines with tags on the first plot of each row:
-
-row_a_plots[[1]] <- row_a_plots[[1]] +
-  labs(tag = "A") +
-  theme(plot.tag = element_text(face = "bold", family = "Arial", size = 18))
-
-row_b_plots[[1]] <- row_b_plots[[1]] +
-  labs(tag = "B") +
-  theme(plot.tag = element_text(face = "bold", family = "Arial", size = 18))
-
-top_row    <- wrap_plots(row_a_plots, ncol = 6)
-bottom_row <- wrap_plots(row_b_plots, ncol = 6)
-
-combined_qrisk3 <- top_row / bottom_row
-
-ggsave(file.path(output_dir, "tuning_QRISK3_thesis.png"),
-       combined_qrisk3, width = 22, height = 9, dpi = 300)
-ggsave(file.path(output_dir, "tuning_QRISK3_thesis.pdf"),
-       combined_qrisk3, width = 22, height = 9)
-cat("Saved tuning_QRISK3_thesis\n")
+cat("\n=== ANALYSIS COMPLETE ===\n")
