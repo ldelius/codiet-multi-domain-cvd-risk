@@ -42,48 +42,53 @@ Predictor datasets used for GLM, Regression Model Comparison, and Elastic Net An
 All predictor preparation steps are documented in dedicated preprocessing scripts, with analysis-ready datasets stored as `.rds` files.
 
 - **Sociodemographic Predictors**
-  - Preprocessing script: [`QRISK3_REDcap_random.R`](QRISK3_REDcap_random.R)
+  - Preprocessing script: [`QRISK3_REDcap_random.R`](H2_CardiovascularRisk/QRISK3_REDcap_random.R)
 Two analysis-ready datasets were generated for different modelling frameworks:
-  - GLM: [`df_REDcap_demographics_predictor.rds`](df_REDcap_demographics_predictor.rds) (Contains z-scaled sociodemographic predictors with variables and observations excluded based on small sample sizes.)
-  - Elastic Net Regression: [`df_REDcap_demographics_ElaNet.rds`](df_REDcap_demographics_ElaNet.rds) (Contains cleaned but non–z-scaled sociodemographic predictors without exclusion.)
+  - GLM: [`df_REDcap_demographics_predictor.rds`](Teams_Files/processed_data/df_REDcap_demographics_predictor.rds) (Contains z-scaled sociodemographic predictors with variables and observations excluded based on small sample sizes.)
+  - Elastic Net Regression: [`df_REDcap_demographics_ElaNet.rds`](Teams_Files/processed_data/df_REDcap_demographics_ElaNet.rds) (Contains cleaned but non–z-scaled sociodemographic predictors without exclusion.)
 
 - **Risk Factor Dataset**
   - This dataset comprises sociodemographic variables, body composition metrics, clinical measurements, and selected faecal and urinary metabolites.
-  - Preprocessing script: [`QRISK3_calculation.R`](QRISK3_calculation.R)
-  - The resulting analysis-ready dataset is stored as: [`df_risk_factor_predictors.rds`](df_risk_factor_predictors.rds) (Contains z-scaled continuous variables, processed factor variables, and the transformed urine tpred score.)
+  - Preprocessing script: [`QRISK3_calculation.R`](H2_CardiovascularRisk/QRISK3_calculation.R)
+  - The resulting analysis-ready dataset is stored as: [`df_risk_factor_predictors.rds`](Teams_Files/processed_data/df_risk_factor_predictors.rds) (Contains z-scaled continuous variables, processed factor variables, and the transformed urine tpred score.)
   - Predictors from this dataset that were conceptually better aligned with other data domains were joint those datasets for the GLM and elastic net regression analyses.
 
 - **Fatty Acid and Lipidomics Predictors**
-  - Preprocessing script: [`QRISK3_lipidomics.R`](QRISK3_lipidomics.R)
+  - Preprocessing script: [`QRISK3_lipidomics.R`](H2_CardiovascularRisk/QRISK3_lipidomics.R)
   - The resulting analysis-ready datasets are stored as (Outliers were removed using the 1st/99th percentile thresholds and continuous variables were z-scaled.):
-    - Fatty acids: [`df_fatty_acids_predictor_statin_suppl.rds`](df_fatty_acids_predictor_statin_suppl.rds)  
-    - Lipidomics: [`df_lipidomics_predictor_statin_suppl.rds`](df_lipidomics_predictor_statin_suppl.rds)
+    - Fatty acids: [`df_fatty_acids_predictor_statin_suppl.rds`](Teams_Files/processed_data/df_fatty_acids_predictor_statin_suppl.rds)  
+    - Lipidomics: [`df_lipidomics_predictor_statin_suppl.rds`](Teams_Files/processed_data/df_lipidomics_predictor_statin_suppl.rds)
 
 - **Urine NMR Predictors**
-  - Preprocessing script: [`urine_nmr_data.R`](urine_nmr_data.R)
-  - The resulting z-scaled, analysis-ready dataset is stored as: [`df_urine_NMR_data.rds`](df_urine_NMR_data.rds)
+  - Preprocessing script: [`urine_nmr_data.R`](H2_CardiovascularRisk/urine_nmr_data.R)
+  - The resulting z-scaled, analysis-ready dataset is stored as: [`df_urine_NMR_data.rds`](Teams_Files/processed_data/df_urine_NMR_data.rds)
 
 - **Body Composition Predictors**
-  - Preprocessing script: [`Body_composition_metrics.R`](Body_composition_metrics.R)
-  - The resulting z-scaled, analysis-ready dataset is stored as: [`df_body_composition_metrics.rds`](df_body_composition_metrics.rds)
+  - Preprocessing script: [`Body_composition_metrics.R`](H2_CardiovascularRisk/Body_composition_metrics.R)
+  - The resulting z-scaled, analysis-ready dataset is stored as: [`df_body_composition_metrics.rds`](Teams_Files/processed_data/df_body_composition_metrics.rds)
 
 #### Chapter 3.2 – GLM Analysis
 
 Associations between predictors and CVD scores reported in Chapter 3.2 of the thesis were analysed using generalised linear models.
-[`FixedEffectAssociations.R`](FixedEffectAssociations.R) includes:
+[`FixedEffectAssociations.R`](H2_CardiovascularRisk/FixedEffectAssociations.R) includes:
 - Data preparation, model fitting, and output generation for the GLM analyses
 - Figure generation for figures presented in Chapter 3.2
 - Produces supplementary tables summarising covariate effects and full GLM results
 - Model Evaluation and respective table
 
-The same analysis, additionally adjusting for Age as a fixed effect, was conducted in: [`FixedEffectAge.R`](FixedEffectAge.R).
+The same analysis, additionally adjusting for Age as a fixed effect, was conducted in: [`FixedEffectAge.R`](H2_CardiovascularRisk/FixedEffectAge.R).
 
 
-#### Chapter 3.3 – ML analysis
+#### Chapter 3.3 – ML Model comparison analysis
 
-ML comparison that was used in thesis is stored in [`ML_comp_parameter_tuning.R`](ML_comp_parameter_tuning.R). Previous comparison with 20-hould out participants and all datasets (not shown in thesis) are stored in [`tidymodels_comparison.R`](tidymodels_comparison.R).
+ML comparison that was used in thesis is stored in [`ML_comp_parameter_tuning.R`](H2_CardiovascularRisk/ML_comp_parameter_tuning.R). Previous comparison with 20-hould out participants and all datasets (not shown in thesis) are stored in [`tidymodels_comparison.R`](H2_CardiovascularRisk/tidymodels_comparison.R).
 - Key pipline parameter: XXX
 
+
+#### Chapter 3.4 – Elastic Net Regression Analysis
+The File XY includes:
+- Data preparation, model fitting, and output generation
+- Figure generation for figures in Elastic Net Regression Analysis Chapter
 
 ## Reproducibility
 
