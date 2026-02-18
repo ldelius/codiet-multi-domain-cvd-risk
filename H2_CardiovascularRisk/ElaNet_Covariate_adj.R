@@ -16,6 +16,7 @@ library(officer)
 library(patchwork)
 library(openxlsx)
 library(circlize)
+library(cowplot)
 
 set.seed(42)
 
@@ -38,7 +39,7 @@ create_output_folder <- function(base_name = "elastic_net_covariate_adjusted") {
 OUTPUT_DIR <- create_output_folder()
 save_output <- function(filename) file.path(OUTPUT_DIR, filename)
 
-CPUS <- parallel::detectCores() - 3
+CPUS <- parallel::detectCores() - 2
 cat(sprintf("Using %d CPU cores for parallel processing\n", CPUS))
 
 # ============================================
@@ -49,7 +50,10 @@ df_fatty_acids_raw_full <- readRDS("df_fatty_acids_predictor_statin_suppl.rds")
 df_risk_factors_raw_full <- readRDS("df_risk_factor_predictors.rds")
 
 df_ascvd_frs_score2_input <- readRDS("ASCVD_SCORE2_Framingham_input.rds") %>%
-  rename(Sample_ID = PatientID)
+  rename(Sample_ID = PatientID) %>%
+  mutate(
+    blood_pressure_treatment = factor(blood_pressure_treatment,
+                                      levels = c(0, 1), labels = c("No", "Yes")))
 
 df_QRISK3_input <- readRDS("QRISK3_calculation_input.rds") %>%
   rename(Sample_ID = PatientID)
@@ -642,7 +646,8 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
     imputation_method = "kNN",
     seed = seed,
     date_run = as.character(Sys.time()),
-    cv_fit_object = list(best_cv_fit)
+    cv_fit_object = list(best_cv_fit),
+    all_cv_results = list(cv_results)
   )
 }
 
@@ -885,7 +890,7 @@ view_results_summary <- function(results_df) {
 results_score_specific <- run_score_specific_models(
   score_specific_datasets = score_specific_datasets,
   alpha_grid = seq(0, 1, by = 0.1),
-  nfolds = 5, n_permutations = 0, seed = 42,
+  nfolds = 5, n_permutations = 1000, seed = 42,
   output_file = "elastic_net_score_specific_5fold.qs2"
 )
 
@@ -893,7 +898,7 @@ results_common <- run_common_datasets_models(
   datasets_list = datasets_list,
   cvd_score_names = CVD_scores,
   alpha_grid = seq(0, 1, by = 0.1),
-  nfolds = 5, n_permutations = 0, seed = 42,
+  nfolds = 5, n_permutations = 1000, seed = 42,
   covariate_cols = COVARIATE_COLS,
   output_file = "elastic_net_common_5fold.qs2"
 )
@@ -916,7 +921,7 @@ for (i in seq_along(scores_without_ht_wt)) {
     results_body_comp_extended[[i]] <- run_elastic_net_model(
       df_raw = df_model, outcome_col = score, cvd_score_name = score,
       dataset_name = "body_comp_with_ht_wt", covariate_cols = COVARIATE_COLS_COMMON,
-      alpha_grid = seq(0, 1, by = 0.1), nfolds = 5, n_permutations = 0, seed = 42
+      alpha_grid = seq(0, 1, by = 0.1), nfolds = 5, n_permutations = 1000, seed = 42
     )
     cat("  ✓ Success\n")
   }, error = function(e) cat(sprintf("  ✗ ERROR: %s\n", e$message)))
@@ -943,7 +948,7 @@ for (i in seq_along(scores_without_ht_wt)) {
     results_score_plus_body_extended[[i]] <- run_elastic_net_model(
       df_raw = df_combined, outcome_col = score, cvd_score_name = score,
       dataset_name = dataset_name,
-      alpha_grid = seq(0, 1, by = 0.1), nfolds = 5, n_permutations = 0, seed = 42
+      alpha_grid = seq(0, 1, by = 0.1), nfolds = 5, n_permutations = 1000, seed = 42
     )
     cat("  ✓ Success\n")
   }, error = function(e) cat(sprintf("  ✗ ERROR: %s\n", e$message)))
@@ -1386,6 +1391,7 @@ plot_data_grouped <- bind_rows(d_score_specific, d_score_plus) %>%
 if (!"Q2_fold_sd" %in% names(plot_data_grouped)) plot_data_grouped$Q2_fold_sd <- 0
 if (!"MAE_fold_sd" %in% names(plot_data_grouped)) plot_data_grouped$MAE_fold_sd <- 0
 
+q2_ymin <- floor(min(plot_data_grouped$Q2_Y - plot_data_grouped$Q2_fold_sd, na.rm = TRUE) * 10) / 10
 
 # --- Plot A: Q² ± SD (vertical) ---
 p_q2_vertical <- plot_data_grouped %>%
@@ -1471,11 +1477,7 @@ cat("\n✓ Vertical grouped-by-score plots saved\n")
 
 
 # ============================================
-# TUNING DIAGNOSTIC PLOTS — ELASTIC NET
-# ============================================
-# Two outputs:
-#   1. All 8 datasets (exploratory, with title)
-#   2. 5 selected datasets (thesis figure, no title)
+# TUNING DIAGNOSTIC PLOTS — FROM ACTUAL MODEL FITS
 # ============================================
 
 library(tidyverse)
@@ -1483,54 +1485,31 @@ library(glmnet)
 library(patchwork)
 
 # ============================================
-# 1. MAIN DATA EXTRACTION FUNCTION
+# 1. EXTRACT TUNING DATA FROM STORED RESULTS
 # ============================================
 
-extract_tuning_data <- function(df_raw, outcome_col, dataset_name,
-                                exclude_cols = "Sample_ID",
-                                covariate_cols, CVD_scores_vec,
-                                alpha_grid = seq(0, 1, by = 0.1),
-                                nfolds = 10, seed = 42,
-                                col_miss_thresh = 0.4, row_miss_thresh = 0.8) {
+extract_tuning_from_results <- function(results_row, dataset_display_name = NULL) {
   
-  set.seed(seed)
+  cv_results <- results_row$all_cv_results[[1]]
+  best_cv_fit <- results_row$cv_fit_object[[1]]
+  best_alpha <- results_row$alpha_optimal_fulldata
+  n_pred <- results_row$n_predictors
+  n_obs <- results_row$n_observations
+  nfolds <- results_row$n_folds
   
-  df_complete <- df_raw %>% filter(!is.na(.data[[outcome_col]]))
-  all_exclude <- unique(c(exclude_cols, outcome_col, CVD_scores_vec))
-  cols_to_protect <- unique(c(all_exclude, covariate_cols))
-  df_filtered <- filter_by_missingness(df_complete, cols_to_protect, col_miss_thresh, row_miss_thresh)
-  
-  for (cov in covariate_cols) {
-    if (!cov %in% names(df_filtered) && cov %in% names(df_complete)) {
-      df_filtered[[cov]] <- df_complete[[cov]][match(df_filtered$Sample_ID, df_complete$Sample_ID)]
-    }
+  if (is.null(dataset_display_name)) {
+    dataset_display_name <- results_row$dataset_name
   }
   
-  y <- df_filtered[[outcome_col]]
-  n_raw_predictors <- length(setdiff(names(df_filtered), c("Sample_ID", outcome_col)))
-  preprocessed <- preprocess_train_test(df_filtered, df_filtered, all_exclude, covariate_cols)
-  X <- preprocessed$X_train
-  pen_factor <- ifelse(preprocessed$is_covariate, 0, 1)
-  
-  foldid <- sample(rep(1:nfolds, length.out = length(y)))
-  
-  all_cv_fits <- lapply(alpha_grid, function(a) {
-    cv_fit <- cv.glmnet(
-      x = X, y = y, alpha = a,
-      penalty.factor = pen_factor,
-      nfolds = nfolds, foldid = foldid,
-      type.measure = "mse", standardize = FALSE, family = "gaussian"
-    )
-    list(alpha = a, cv_fit = cv_fit)
-  })
-  
+  # Alpha panel data
+  alpha_grid <- sapply(cv_results, function(x) x$alpha)
   alpha_rmse_df <- tibble(
     alpha = alpha_grid,
-    cv_rmse = sapply(all_cv_fits, function(x) {
+    cv_rmse = sapply(cv_results, function(x) {
       idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se)
       sqrt(x$cv_fit$cvm[idx])
     }),
-    cv_rmse_se = sapply(all_cv_fits, function(x) {
+    cv_rmse_se = sapply(cv_results, function(x) {
       idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se)
       mse_sd <- x$cv_fit$cvsd[idx]
       rmse_val <- sqrt(x$cv_fit$cvm[idx])
@@ -1539,9 +1518,8 @@ extract_tuning_data <- function(df_raw, outcome_col, dataset_name,
   )
   
   best_alpha_idx <- which.min(alpha_rmse_df$cv_rmse)
-  best_alpha <- alpha_rmse_df$alpha[best_alpha_idx]
-  best_cv_fit <- all_cv_fits[[best_alpha_idx]]$cv_fit
   
+  # Lambda panel data
   lambda_df <- tibble(
     log_lambda = log(best_cv_fit$lambda),
     cv_rmse = sqrt(best_cv_fit$cvm),
@@ -1564,14 +1542,14 @@ extract_tuning_data <- function(df_raw, outcome_col, dataset_name,
     lambda_df        = lambda_df,
     nzero_at_min     = nzero_at_min,
     nzero_at_1se     = nzero_at_1se,
-    n_raw_predictors = n_raw_predictors,
-    n_obs            = length(y),
-    dataset_name     = dataset_name
+    n_raw_predictors = n_pred,
+    n_obs            = n_obs,
+    dataset_name     = dataset_display_name
   )
 }
 
 # ============================================
-# 2. PANEL BUILDERS
+# 2. PANEL BUILDERS (unchanged)
 # ============================================
 
 build_alpha_panel <- function(res, show_y_label = TRUE) {
@@ -1603,7 +1581,6 @@ build_alpha_panel <- function(res, show_y_label = TRUE) {
       axis.text = element_text(size = 11),
       panel.grid.minor = element_blank()
     )
-  
   p
 }
 
@@ -1655,12 +1632,11 @@ build_lambda_panel <- function(res, show_y_label = TRUE) {
       axis.text.x.top = element_text(size = 7),
       panel.grid.minor = element_blank()
     )
-  
   p
 }
 
 # ============================================
-# 3. HELPER: Assemble a figure from a subset of results
+# 3. ASSEMBLE FIGURE
 # ============================================
 
 assemble_tuning_figure <- function(tuning_results, add_title = TRUE) {
@@ -1669,7 +1645,6 @@ assemble_tuning_figure <- function(tuning_results, add_title = TRUE) {
   alpha_panels <- lapply(seq_len(n), function(i) {
     build_alpha_panel(tuning_results[[i]], show_y_label = (i == 1))
   })
-  
   lambda_panels <- lapply(seq_len(n), function(i) {
     build_lambda_panel(tuning_results[[i]], show_y_label = (i == 1))
   })
@@ -1677,14 +1652,12 @@ assemble_tuning_figure <- function(tuning_results, add_title = TRUE) {
   alpha_panels[[1]] <- alpha_panels[[1]] +
     labs(tag = "A") +
     theme(plot.tag = element_text(face = "bold", family = "Arial", size = 14))
-  
   lambda_panels[[1]] <- lambda_panels[[1]] +
     labs(tag = "B") +
     theme(plot.tag = element_text(face = "bold", family = "Arial", size = 14))
   
   alpha_row <- wrap_plots(alpha_panels, nrow = 1)
   lambda_row <- wrap_plots(lambda_panels, nrow = 1)
-  
   combined <- alpha_row / lambda_row
   
   if (add_title) {
@@ -1698,36 +1671,46 @@ assemble_tuning_figure <- function(tuning_results, add_title = TRUE) {
         )
       )
   }
-  
   combined
 }
 
 # ============================================
-# 4. GENERATE TUNING DATA FOR ALL DATASETS
+# 4. EXTRACT FROM ACTUAL RESULTS
 # ============================================
 
-dataset_configs <- list(
-  list(df = score_specific_datasets[["QRISK3_risk"]], name = "Score-Specific"),
-  list(df = datasets_list[["all_data"]], name = "Full Predictor Set"),
-  list(df = datasets_list[["body_composition"]], name = "Body Composition"),
-  list(df = datasets_list[["sociodemographics_lifestyle"]], name = "Sociodemographics"),
-  list(df = datasets_list[["clinical_risk_factors"]], name = "Clinical Risk Factors"),
-  list(df = datasets_list[["lipids"]], name = "Lipids"),
-  list(df = datasets_list[["fatty_acids"]], name = "Fatty Acids"),
-  list(df = datasets_list[["urine_nmr"]], name = "Urine NMR")
+# Dataset display names (same order as before)
+dataset_display_names <- list(
+  "QRISK3_risk_specific" = "Score-Specific",
+  "all_data" = "Full Predictor Set",
+  "body_composition" = "Body Composition",
+  "sociodemographics_lifestyle" = "Sociodemographics",
+  "clinical_risk_factors" = "Clinical Risk Factors",
+  "lipids" = "Lipids",
+  "fatty_acids" = "Fatty Acids",
+  "urine_nmr" = "Urine NMR"
 )
 
-tuning_results_all <- lapply(dataset_configs, function(cfg) {
-  cat(sprintf("Generating tuning data for QRISK3 ~ %s...\n", cfg$name))
-  extract_tuning_data(
-    df_raw = cfg$df,
-    outcome_col = "QRISK3_risk",
-    dataset_name = cfg$name,
-    covariate_cols = COVARIATE_COLS,
-    CVD_scores_vec = CVD_scores,
-    alpha_grid = seq(0, 1, by = 0.1),
-    nfolds = 10, seed = 42
-  )
+# Filter QRISK3 results from score-specific and common
+qrisk3_score_specific <- results_score_specific %>%
+  filter(cvd_score == "QRISK3_risk")
+
+qrisk3_common <- results_common %>%
+  filter(cvd_score == "QRISK3_risk")
+
+tuning_configs <- list(
+  list(row = qrisk3_score_specific, name = "Score-Specific"),
+  list(row = qrisk3_common %>% filter(dataset_name == "all_data"), name = "Full Predictor Set"),
+  list(row = qrisk3_common %>% filter(dataset_name == "body_composition"), name = "Body Composition"),
+  list(row = qrisk3_common %>% filter(dataset_name == "sociodemographics_lifestyle"), name = "Sociodemographics"),
+  list(row = qrisk3_common %>% filter(dataset_name == "clinical_risk_factors"), name = "Clinical Risk Factors"),
+  list(row = qrisk3_common %>% filter(dataset_name == "lipids"), name = "Lipids"),
+  list(row = qrisk3_common %>% filter(dataset_name == "fatty_acids"), name = "Fatty Acids"),
+  list(row = qrisk3_common %>% filter(dataset_name == "urine_nmr"), name = "Urine NMR")
+)
+
+tuning_results_all <- lapply(tuning_configs, function(cfg) {
+  cat(sprintf("Extracting tuning data for QRISK3 ~ %s...\n", cfg$name))
+  extract_tuning_from_results(cfg$row, dataset_display_name = cfg$name)
 })
 
 # ============================================
@@ -1736,45 +1719,25 @@ tuning_results_all <- lapply(dataset_configs, function(cfg) {
 
 plot_all <- assemble_tuning_figure(tuning_results_all, add_title = TRUE)
 
-ggsave(
-  filename = save_output("tuning_diagnostics_QRISK3_all.png"),
-  plot = plot_all,
-  width = 24, height = 9, dpi = 300
-)
-
-ggsave(
-  filename = save_output("tuning_diagnostics_QRISK3_all.pdf"),
-  plot = plot_all,
-  width = 24, height = 9, dpi = 300,
-  device = cairo_pdf
-)
-
+ggsave(save_output("tuning_diagnostics_QRISK3_all.png"),
+       plot = plot_all, width = 24, height = 9, dpi = 300)
+ggsave(save_output("tuning_diagnostics_QRISK3_all.pdf"),
+       plot = plot_all, width = 24, height = 9, dpi = 300, device = cairo_pdf)
 cat("Saved: tuning_diagnostics_QRISK3_all (.png + .pdf)\n")
 
 # ============================================
 # 6. PLOT 2: 5 SELECTED DATASETS (thesis)
 # ============================================
 
-# Indices: 1=Score-Specific, 2=Full Predictor Set, 3=Body Composition,
-#          4=Sociodemographics, 6=Lipids
 thesis_indices <- c(1, 2, 3, 4, 6)
 tuning_results_thesis <- tuning_results_all[thesis_indices]
 
 plot_thesis <- assemble_tuning_figure(tuning_results_thesis, add_title = FALSE)
 
-ggsave(
-  filename = save_output("tuning_diagnostics_QRISK3_thesis.png"),
-  plot = plot_thesis,
-  width = 16, height = 7, dpi = 300
-)
-
-ggsave(
-  filename = save_output("tuning_diagnostics_QRISK3_thesis.pdf"),
-  plot = plot_thesis,
-  width = 16, height = 7, dpi = 300,
-  device = cairo_pdf
-)
-
+ggsave(save_output("tuning_diagnostics_QRISK3_thesis.png"),
+       plot = plot_thesis, width = 16, height = 7, dpi = 300)
+ggsave(save_output("tuning_diagnostics_QRISK3_thesis.pdf"),
+       plot = plot_thesis, width = 16, height = 7, dpi = 300, device = cairo_pdf)
 cat("Saved: tuning_diagnostics_QRISK3_thesis (.png + .pdf)\n")
 
 
@@ -2285,7 +2248,7 @@ cat("==========================================================\n")
 
 #' Calculate permutation importance for a single feature
 calculate_single_feature_importance <- function(feat, X_test, y_test,
-                                                y_pred_baseline, mse_baseline,
+                                                y_pred_baseline, mae_baseline,
                                                 cv_fit, n_permutations, seed) {
   set.seed(seed)
   feat_idx <- which(colnames(X_test) == feat)
@@ -2294,20 +2257,20 @@ calculate_single_feature_importance <- function(feat, X_test, y_test,
                   importance_sd = NA_real_, p_value = NA_real_))
   }
   
-  mse_permuted <- numeric(n_permutations)
+  mae_permuted <- numeric(n_permutations)
   for (p in 1:n_permutations) {
     X_test_perm <- X_test
     X_test_perm[, feat_idx] <- sample(X_test_perm[, feat_idx])
     y_pred_perm <- as.numeric(predict(cv_fit, newx = X_test_perm, s = "lambda.1se"))
-    mse_permuted[p] <- mean((y_test - y_pred_perm)^2)
+    mae_permuted[p] <- mean(abs(y_test - y_pred_perm))
   }
   
-  delta_mse <- mse_permuted - mse_baseline
+  delta_mae <- mae_permuted - mae_baseline
   tibble(
     feature = feat,
-    importance = mean(delta_mse),
-    importance_sd = sd(delta_mse),
-    p_value = mean(delta_mse <= 0)
+    importance = mean(delta_mae),
+    importance_sd = sd(delta_mae),
+    p_value = mean(delta_mae <= 0)
   )
 }
 
@@ -2320,7 +2283,7 @@ calculate_fold_importance <- function(X_train, X_test, y_train, y_test,
   set.seed(seed)
   
   y_pred_baseline <- as.numeric(predict(cv_fit, newx = X_test, s = "lambda.1se"))
-  mse_baseline <- mean((y_test - y_pred_baseline)^2)
+  mae_baseline <- mean(abs(y_test - y_pred_baseline))
   
   features_to_test <- intersect(features_to_test, colnames(X_test))
   if (length(features_to_test) == 0) {
@@ -2335,7 +2298,7 @@ calculate_fold_importance <- function(X_train, X_test, y_train, y_test,
     function(i) {
       calculate_single_feature_importance(
         features_to_test[i], X_test, y_test,
-        y_pred_baseline, mse_baseline,
+        y_pred_baseline, mae_baseline,
         cv_fit, n_permutations, feature_seeds[i]
       )
     },
@@ -2488,7 +2451,7 @@ run_permutation_importance <- function(df_raw, outcome_col, exclude_cols,
     fold_importance$fold <- k
     fold_results[[k]] <- fold_importance
     
-    cat(sprintf("done in %.1fs (top: %s, Δ MSE = %.4f)\n",
+    cat(sprintf("done in %.1fs (top: %s, Δ MAE = %.4f)\n",
                 as.numeric(fold_elapsed),
                 fold_importance$feature[which.max(fold_importance$importance)],
                 max(fold_importance$importance, na.rm = TRUE)))
@@ -2619,7 +2582,7 @@ run_permutation_importance_batch <- function(results_df,
         top_feat <- importance_results$aggregated$feature[1]
         top_imp <- importance_results$aggregated$importance[1]
         
-        cat(sprintf("  ✓ Complete in %.1f min: %d significant (q < 0.05), top = %s (Δ MSE = %.4f)\n",
+        cat(sprintf("  ✓ Complete in %.1f min: %d significant (q < 0.05), top = %s (Δ MAE = %.4f)\n",
                     as.numeric(model_elapsed), n_sig, top_feat, top_imp))
         cat(sprintf("  ✓ Saved to %s\n", basename(incremental_file)))
       } else { cat("  ✗ No results returned\n") }
@@ -2700,7 +2663,7 @@ plot_importance_bars <- function(importance_data, coefficient_directions,
       subtitle = paste0("Dataset: ", dataset_name,
                         " | Adjusted for ", paste(COVARIATE_COLS, collapse = ", "),
                         " | *q<0.05 **q<0.01 ***q<0.001"),
-      x = "Feature", y = "Importance (Δ MSE when permuted)"
+      x = "Feature", y = "Importance (Δ MAE when permuted)"
     ) +
     theme_minimal(base_size = 11) +
     theme(
@@ -2800,7 +2763,7 @@ plot_block_importance <- function(importance_data, coefficient_directions,
       title = sprintf("Permutation Importance: %s (Adjusted for %s)",
                       block_name, paste(COVARIATE_COLS, collapse = ", ")),
       subtitle = sprintf("All features with positive importance | *q<0.05 **q<0.01 ***q<0.001"),
-      x = NULL, y = "Importance (Δ MSE)"
+      x = NULL, y = "Importance (Δ MAE)"
     ) +
     theme_minimal(base_size = 10) +
     theme(
@@ -3505,270 +3468,18 @@ significant_tables_common <- create_significant_tables(
 )
 
 
-# ============================================
-# 20. CIRCULAR IMPORTANCE PLOT
-# ============================================
-
-create_circular_importance_plot <- function(importance_df, coefficient_df,
-                                            result_type = "score_plus_block",
-                                            title = "Feature\nImportance",
-                                            output_file = "circular_importance.pdf",
-                                            use_sqrt_scale = TRUE) {
-  
-  block_info <- tibble(
-    block = c("body_composition", "clinical_risk_factors", "sociodemographics_lifestyle",
-              "fatty_acids", "urine_nmr", "lipids"),
-    block_label = c("Body Composition", "Clinical Measurements & Supplementary Biomarkers", "Sociodemographics",
-                    "Fatty Acids", "Urine NMR", "Lipids")
-  )
-  
-  # Match violin plot colours
-  cvd_colors <- c(
-    "QRISK3" = "#F8766D",
-    "SCORE2" = "#00BA38",
-    "Framingham" = "#B79F00",
-    "ASCVD" = "#619CFF"
-  )
-  cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
-  
-  if (result_type == "score_plus_block") {
-    plot_data <- importance_df %>% mutate(block = sub("^.*_specific\\+", "", dataset_name))
-  } else {
-    plot_data <- importance_df %>% mutate(block = dataset_name)
-  }
-  
-  plot_data <- plot_data %>%
-    filter(block %in% block_info$block, importance > 0, p_value_bh < 0.05) %>%
-    left_join(
-      coefficient_df %>% select(cvd_score, dataset_name, feature, direction),
-      by = c("cvd_score", "dataset_name", "feature")
-    ) %>%
-    mutate(
-      cvd_label = recode(cvd_score,
-                         "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
-                         "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
-      plot_importance = if (use_sqrt_scale) sqrt(importance) else importance,
-      bar_value = ifelse(direction == "Risk-Increasing", plot_importance, -plot_importance),
-      sig_stars = case_when(
-        p_value_bh < 0.001 ~ "***", p_value_bh < 0.01 ~ "**",
-        p_value_bh < 0.05 ~ "*", TRUE ~ ""
-      )
-    ) %>%
-    filter(!is.na(direction), direction != "Zero")
-  
-  cat(sprintf("Total significant features: %d\n", n_distinct(plot_data$feature)))
-  
-  plot_data <- plot_data %>%
-    left_join(block_info, by = "block") %>%
-    mutate(block = factor(block, levels = block_info$block))
-  
-  feature_order <- plot_data %>%
-    group_by(block, feature) %>%
-    summarise(avg_imp = mean(importance, na.rm = TRUE), n_scores = n(), .groups = "drop") %>%
-    arrange(block, desc(avg_imp)) %>%
-    group_by(block) %>% mutate(feature_idx = row_number()) %>% ungroup()
-  
-  plot_data <- plot_data %>%
-    left_join(feature_order %>% select(block, feature, feature_idx, n_scores),
-              by = c("block", "feature"))
-  
-  features_per_block <- feature_order %>%
-    group_by(block) %>% summarise(n_features = n(), .groups = "drop") %>%
-    left_join(block_info, by = "block") %>%
-    filter(n_features > 0) %>%
-    arrange(match(block, block_info$block))
-  
-  cat("\nFeatures per block:\n")
-  print(features_per_block)
-  
-  max_plot_val <- max(abs(plot_data$bar_value), na.rm = TRUE) * 1.1
-  
-  if (use_sqrt_scale) {
-    grid_original <- c(0.5, 1, 2, 5, 10, 20)
-    grid_sqrt <- sqrt(grid_original)
-    grid_labels <- as.character(grid_original)
-  } else {
-    grid_original <- c(1, 5, 10, 15, 20)
-    grid_sqrt <- grid_original
-    grid_labels <- as.character(grid_original)
-  }
-  grid_sqrt <- grid_sqrt[grid_sqrt <= max_plot_val]
-  grid_labels <- grid_labels[1:length(grid_sqrt)]
-  
-  # ---- Draw circular plot ----
-  pdf(save_output(output_file), width = 14, height = 14)
-  par(mar = c(1, 1, 1, 1))
-  circos.clear()
-  
-  circos.par(
-    start.degree = 90,
-    gap.degree = c(rep(4, nrow(features_per_block) - 1), 12),
-    cell.padding = c(0, 0, 0, 0),
-    track.margin = c(0.005, 0.005),
-    canvas.xlim = c(-1.2, 1.2), canvas.ylim = c(-1.2, 1.2)
-  )
-  
-  sectors <- features_per_block$block
-  xlims <- cbind(rep(0, nrow(features_per_block)), features_per_block$n_features)
-  
-  circos.initialize(
-    factors = factor(sectors, levels = features_per_block$block),
-    xlim = xlims
-  )
-  
-  # Track 1: Bars
-  circos.track(
-    factors = factor(sectors, levels = features_per_block$block),
-    ylim = c(-max_plot_val, max_plot_val),
-    track.height = 0.6, bg.border = NA,
-    panel.fun = function(x, y) {
-      block_name <- CELL_META$sector.index
-      block_data <- plot_data %>%
-        filter(block == block_name) %>%
-        arrange(feature_idx, factor(cvd_label, levels = cvd_order))
-      if (nrow(block_data) == 0) return()
-      
-      features <- unique(block_data$feature[order(block_data$feature_idx)])
-      bar_width <- 0.2
-      
-      for (f_idx in seq_along(features)) {
-        feat <- features[f_idx]
-        feat_data <- block_data %>%
-          filter(feature == feat) %>%
-          arrange(factor(cvd_label, levels = cvd_order))
-        
-        n_bars <- nrow(feat_data)
-        total_width <- n_bars * bar_width + (n_bars - 1) * 0.02
-        start_offset <- -total_width / 2 + bar_width / 2
-        
-        for (b_idx in 1:n_bars) {
-          cvd <- feat_data$cvd_label[b_idx]
-          bar_val <- feat_data$bar_value[b_idx]
-          sig <- feat_data$sig_stars[b_idx]
-          
-          bar_x <- (f_idx - 0.5) + start_offset + (b_idx - 1) * (bar_width + 0.02)
-          
-          circos.rect(
-            xleft = bar_x - bar_width/2, xright = bar_x + bar_width/2,
-            ybottom = 0, ytop = bar_val,
-            col = cvd_colors[cvd], border = "white", lwd = 0.5
-          )
-          
-          if (sig != "") {
-            text_y <- bar_val + sign(bar_val) * max_plot_val * 0.07
-            circos.text(x = bar_x, y = text_y, labels = sig,
-                        facing = "inside", niceFacing = TRUE, cex = 0.5, col = "black")
-          }
-        }
-      }
-      
-      circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = 0, y1 = 0, col = "grey30", lwd = 1)
-      for (g in grid_sqrt) {
-        circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = g, y1 = g, col = "grey75", lwd = 0.5, lty = 3)
-        circos.segments(x0 = 0, x1 = CELL_META$xlim[2], y0 = -g, y1 = -g, col = "grey75", lwd = 0.5, lty = 3)
-      }
-    }
-  )
-  
-  # Track 2: Feature labels
-  circos.track(
-    factors = factor(sectors, levels = features_per_block$block),
-    ylim = c(0, 1), track.height = 0.30, bg.border = NA,
-    panel.fun = function(x, y) {
-      block_name <- CELL_META$sector.index
-      block_features <- feature_order %>%
-        filter(block == block_name) %>% arrange(feature_idx)
-      
-      for (i in 1:nrow(block_features)) {
-        feat_clean <- block_features$feature[i] %>%
-          gsub("_", " ", .) %>% gsub("\\.", " ", .)
-        if (nchar(feat_clean) > 40) feat_clean <- paste0(substr(feat_clean, 1, 37), "...")
-        
-        circos.text(x = i - 0.5, y = 0.5, labels = feat_clean,
-                    facing = "clockwise", niceFacing = TRUE,
-                    adj = c(0, 0.5), cex = 0.5)
-      }
-    }
-  )
-  
-  # Block labels outside
-  for (i in 1:nrow(features_per_block)) {
-    block_name <- as.character(features_per_block$block[i])
-    block_label <- features_per_block$block_label[i]
-    
-    theta_start <- get.cell.meta.data("cell.start.degree", sector.index = block_name, track.index = 2)
-    theta_end <- get.cell.meta.data("cell.end.degree", sector.index = block_name, track.index = 2)
-    theta_mid <- (theta_start + theta_end) / 2
-    theta_rad <- theta_mid * pi / 180
-    
-    x_pos <- 1.05 * cos(theta_rad)
-    y_pos <- 1.05 * sin(theta_rad)
-    text_angle <- theta_mid - 90
-    if (theta_mid > 90 && theta_mid < 270) text_angle <- theta_mid + 90
-    
-    text(x_pos, y_pos, block_label, srt = text_angle, cex = 1.0, font = 2, adj = 0.5)
-  }
-  
-  text(0, 0, title, cex = 0.9, font = 2, col = "grey30")
-  
-  # Scale labels
-  set.current.cell(sector.index = as.character(features_per_block$block[1]), track.index = 1)
-  for (i in seq_along(grid_sqrt)) {
-    circos.text(x = -0.3, y = grid_sqrt[i], labels = grid_labels[i], cex = 0.5, col = "grey40")
-  }
-  
-  legend(x = 0.5, y = -0.85, legend = names(cvd_colors), fill = cvd_colors,
-         border = NA, title = "CVD Score", title.font = 2, cex = 0.85, bty = "n", ncol = 2)
-  legend(x = -1.1, y = -0.85,
-         legend = c("Outward = Risk-Increasing (β > 0)", "Inward = Risk-Decreasing (β < 0)"),
-         title = "Effect Direction", title.font = 2, cex = 0.75, bty = "n")
-  legend(x = -0.3, y = -1.0, legend = c("* q < 0.05", "** q < 0.01", "*** q < 0.001"),
-         title = "Significance", title.font = 2, cex = 0.75, bty = "n", ncol = 3)
-  
-  if (use_sqrt_scale) {
-    text(0, -1.1, "Scale: sqrt(delta MSE) - gridline values in original units", cex = 0.7, col = "grey40")
-  }
-  
-  circos.clear()
-  dev.off()
-  
-  cat(sprintf("\n✓ Saved to %s\n", output_file))
-  invisible(list(data = plot_data, features_per_block = features_per_block))
-}
-
-
-# ---- Run circular plots ----
-cat("\n=== Creating circular importance plots ===\n")
-
-result_spb <- create_circular_importance_plot(
-  importance_df = importance_results_full$aggregated,
-  coefficient_df = coefficient_directions_full,
-  result_type = "score_plus_block",
-  title = "Feature\nImportance",
-  output_file = "circular_importance_score_plus_blocks.pdf",
-  use_sqrt_scale = TRUE
-)
-
-result_common <- create_circular_importance_plot(
-  importance_df = importance_results_common$aggregated,
-  coefficient_df = coefficient_directions_common,
-  result_type = "common",
-  title = "Feature\nImportance",
-  output_file = "circular_importance_common.pdf",
-  use_sqrt_scale = TRUE
-)
-
-cat("\n✓ All done\n")
-
 
 # ============================================
-# 21. BAR IMPORTANCE PLOTS — COMMON (BLOCKS-ONLY)
+# 20. UNIFIED BAR IMPORTANCE PLOTS
 # ============================================
-# Vertical bars (mean Δ MSE) with SE error bars + fold-level data points.
-# Risk-increasing bars go up, risk-decreasing go down.
-# Bars packed tightly per feature (no gaps for missing scores).
-# Only features with ≥3 non-zero folds shown.
-# Significance stars from BH q-values.
+# Four filter modes:
+#   a) all_selected:           non-zero elastic net coefficient
+#   b) significant:            + significant (q < 0.05)
+#   c) positive_delta:         + positive mean ΔMAE
+#   d) positive_delta_3folds:  + positive ΔMAE in ≥3 folds
+#
+# Each mode × each result type (common, score+block) = separate output folder.
+# ============================================
 
 library(ggplot2)
 
@@ -3807,10 +3518,13 @@ get_sociodemographic_references <- function() {
 
 
 #' Create direction-aware bar plot for one dataset block
+#'
+#' @param filter_mode One of: "all_selected", "significant", "positive_delta", "positive_delta_3folds"
 create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
                                       block_name, block_label = NULL,
                                       cvd_colors = NULL,
-                                      min_nonzero_folds = 3) {
+                                      result_type = "common",
+                                      filter_mode = "positive_delta_3folds") {
   
   if (is.null(cvd_colors)) {
     cvd_colors <- c(
@@ -3821,12 +3535,19 @@ create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
   cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
   if (is.null(block_label)) block_label <- block_name
   
-  # Filter to this block, non-zero importance only
-  plot_data <- fold_data %>%
-    filter(dataset_name == block_name, importance > 0)
+  min_nonzero_folds <- if (filter_mode == "positive_delta_3folds") 3 else 1
+  
+  # ---- Filter fold data to this block ----
+  if (result_type == "score_plus_block") {
+    plot_data <- fold_data %>%
+      filter(grepl(paste0("_specific\\+", block_name, "$"), dataset_name))
+  } else {
+    plot_data <- fold_data %>%
+      filter(dataset_name == block_name)
+  }
   if (nrow(plot_data) == 0) return(NULL)
   
-  # Join with coefficient directions
+  # ---- Join with coefficient directions (step 1: non-zero coef) ----
   plot_data <- plot_data %>%
     left_join(
       coefficient_df %>% select(cvd_score, dataset_name, feature, direction),
@@ -3835,7 +3556,7 @@ create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
     filter(!is.na(direction), direction != "Zero")
   if (nrow(plot_data) == 0) return(NULL)
   
-  # Labels
+  # ---- Labels ----
   plot_data <- plot_data %>%
     mutate(
       cvd_label = recode(cvd_score,
@@ -3844,19 +3565,55 @@ create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
       cvd_label = factor(cvd_label, levels = cvd_order)
     )
   
-  # Count non-zero folds per feature-score; keep ≥ min_nonzero_folds
-  fold_counts <- plot_data %>%
-    group_by(feature, cvd_label) %>%
-    summarise(n_nonzero = n(), .groups = "drop")
+  # ---- Apply filter_mode ----
+  n_excluded_combos <- 0
+  filter_description <- ""
   
-  valid_combos <- fold_counts %>% filter(n_nonzero >= min_nonzero_folds)
-  n_excluded_combos <- nrow(fold_counts) - nrow(valid_combos)
+  if (filter_mode == "all_selected") {
+    # Keep everything (all folds, including importance == 0)
+    filter_description <- "All features with non-zero elastic net coefficients"
+    
+  } else if (filter_mode == "significant") {
+    # Keep only features significant in aggregated results
+    if (result_type == "score_plus_block") {
+      agg_sig <- aggregated_df %>%
+        filter(grepl(paste0("_specific\\+", block_name, "$"), dataset_name), p_value_bh < 0.05)
+    } else {
+      agg_sig <- aggregated_df %>%
+        filter(dataset_name == block_name, p_value_bh < 0.05)
+    }
+    sig_combos <- agg_sig %>%
+      mutate(cvd_label = recode(cvd_score,
+                                "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                                "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD")) %>%
+      select(feature, cvd_label)
+    
+    plot_data <- plot_data %>% semi_join(sig_combos, by = c("feature", "cvd_label"))
+    filter_description <- "Significant features only (q < 0.05)"
+    
+  } else if (filter_mode == "positive_delta") {
+    # Keep only folds with importance > 0
+    plot_data <- plot_data %>% filter(importance > 0)
+    filter_description <- "Features with positive \u0394MAE"
+    
+  } else if (filter_mode == "positive_delta_3folds") {
+    # Keep only folds with importance > 0, then require ≥3 such folds
+    plot_data <- plot_data %>% filter(importance > 0)
+    
+    fold_counts <- plot_data %>%
+      group_by(feature, cvd_label) %>%
+      summarise(n_nonzero = n(), .groups = "drop")
+    valid_combos <- fold_counts %>% filter(n_nonzero >= min_nonzero_folds)
+    n_excluded_combos <- nrow(fold_counts) - nrow(valid_combos)
+    
+    plot_data <- plot_data %>%
+      semi_join(valid_combos, by = c("feature", "cvd_label"))
+    filter_description <- "Features with positive \u0394MAE in \u22653 folds"
+  }
   
-  plot_data <- plot_data %>%
-    semi_join(valid_combos, by = c("feature", "cvd_label"))
   if (nrow(plot_data) == 0) return(NULL)
   
-  # Summarise: mean ± SE per feature per score
+  # ---- Summarise: mean ± SE per feature per score ----
   summary_data <- plot_data %>%
     group_by(feature, cvd_label, direction) %>%
     summarise(
@@ -3877,9 +3634,16 @@ create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
   plot_data <- plot_data %>%
     mutate(signed_importance = ifelse(direction == "Risk-Increasing", importance, -importance))
   
-  # Join significance from aggregated data
-  sig_data <- aggregated_df %>%
-    filter(dataset_name == block_name) %>%
+  # ---- Join significance from aggregated data ----
+  if (result_type == "score_plus_block") {
+    agg_filtered <- aggregated_df %>%
+      filter(grepl(paste0("_specific\\+", block_name, "$"), dataset_name))
+  } else {
+    agg_filtered <- aggregated_df %>%
+      filter(dataset_name == block_name)
+  }
+  
+  sig_data <- agg_filtered %>%
     mutate(
       cvd_label = recode(cvd_score,
                          "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
@@ -3974,7 +3738,17 @@ create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
                       ymin - max(abs(summary_data$signed_mean), na.rm = TRUE) * 0.05)
     )
   
-  plot_width <- max(10, 4 + n_features * 0.8)
+  # ---- Dynamic sizing ----
+  plot_width <- if (n_features > 50) {
+    max(20, 4 + n_features * 0.4)
+  } else {
+    max(10, 4 + n_features * 0.8)
+  }
+  
+  x_text_size <- if (n_features > 80) 5 else if (n_features > 50) 6 else if (n_features > 30) 9 else 12
+  
+  type_prefix <- if (result_type == "score_plus_block") "Score-Specific + " else ""
+  covariate_label <- paste(COVARIATE_COLS, collapse = ", ")
   
   # ---- Build plot ----
   p <- ggplot() +
@@ -3999,12 +3773,13 @@ create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
       expand = expansion(add = 0.8)
     ) +
     labs(
-      title = sprintf("Permutation Feature Importance: %s", block_label),
-      subtitle = paste0("Mean \u00b1 SE (non-zero folds, \u22653 required) | 1000 permutations/fold | ",
-                        "Adjusted for ", paste(COVARIATE_COLS_COMMON, collapse = ", ")),
+      title = sprintf("Permutation Feature Importance: %s%s", type_prefix, block_label),
+      subtitle = paste0(filter_description,
+                        " | Mean \u00b1 SE | 1000 permutations/fold | Adjusted for ",
+                        covariate_label),
       x = NULL,
-      y = expression(Delta ~ "MSE (signed by effect direction)")
-    ) +
+      y = expression(Delta ~ "MAE (signed by effect direction)")
+      ) +
     annotate("text", x = min(feature_tick_positions$x_tick) - 0.5, y = Inf,
              label = "Risk-Increasing  \u2191",
              hjust = 0, vjust = 1.5, size = 3.5, color = "grey40", fontface = "italic") +
@@ -4015,7 +3790,7 @@ create_importance_barplot <- function(fold_data, coefficient_df, aggregated_df,
     theme(
       plot.title = element_text(face = "bold", hjust = 0.5, size = 13),
       plot.subtitle = element_text(size = 9, color = "gray40", hjust = 0.5),
-      axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+      axis.text.x = element_text(size = x_text_size, angle = 45, hjust = 1),
       axis.text.y = element_text(size = 11),
       axis.title.y = element_text(size = 10),
       legend.position = "bottom",
@@ -4071,7 +3846,9 @@ create_all_importance_barplots <- function(importance_results,
                                                       "urine_nmr", "body_composition",
                                                       "clinical_risk_factors",
                                                       "sociodemographics_lifestyle"),
-                                           output_dir = "importance_barplots_common",
+                                           output_dir = "importance_barplots",
+                                           result_type = "common",
+                                           filter_mode = "positive_delta_3folds",
                                            dataset_labels = NULL) {
   
   full_output_dir <- save_output(output_dir)
@@ -4087,13 +3864,15 @@ create_all_importance_barplots <- function(importance_results,
     )
   }
   
-  cat("\n=== Extracting per-fold importance data ===\n")
+  type_label <- if (result_type == "score_plus_block") "score+block" else "blocks only"
+  cat(sprintf("\n=== Extracting per-fold importance data (%s) ===\n", type_label))
   fold_data <- extract_per_fold_data(importance_results)
   cat(sprintf("  Total fold-level records: %d\n", nrow(fold_data)))
   
   aggregated_df <- importance_results$aggregated
   
-  cat(sprintf("\nCreating bar plots for %d blocks...\n", length(blocks)))
+  cat(sprintf("\nCreating bar plots for %d blocks (%s, filter: %s)...\n",
+              length(blocks), type_label, filter_mode))
   all_plots <- list()
   
   for (block in blocks) {
@@ -4105,11 +3884,13 @@ create_all_importance_barplots <- function(importance_results,
       coefficient_df = coefficient_directions,
       aggregated_df = aggregated_df,
       block_name = block,
-      block_label = label
+      block_label = label,
+      result_type = result_type,
+      filter_mode = filter_mode
     )
     
     if (is.null(result)) {
-      cat("No features with positive importance in \u22653 folds\n")
+      cat("No features passing filter\n")
       next
     }
     
@@ -4119,8 +3900,9 @@ create_all_importance_barplots <- function(importance_results,
     ggsave(
       file.path(full_output_dir, sprintf("importance_barplot_%s.pdf", block)),
       result$plot,
-      width = result$plot_width,
-      height = 7
+      width = min(50, result$plot_width),
+      height = 7,
+      limitsize = FALSE
     )
     all_plots[[block]] <- result
   }
@@ -4130,13 +3912,690 @@ create_all_importance_barplots <- function(importance_results,
 }
 
 
-# ---- Run ----
-cat("\n=== Creating importance bar plots for COMMON (blocks-only) ===\n")
+# ============================================
+# 21. RUN ALL BAR PLOTS
+# ============================================
 
-importance_barplots_common <- create_all_importance_barplots(
+filter_modes <- c("all_selected", "significant", "positive_delta", "positive_delta_3folds")
+
+for (mode in filter_modes) {
+  cat(sprintf("\n########## Filter mode: %s ##########\n", mode))
+  
+  cat(sprintf("\n--- COMMON (blocks only) | %s ---\n", mode))
+  create_all_importance_barplots(
+    importance_results = importance_results_common,
+    coefficient_directions = coefficient_directions_common,
+    output_dir = sprintf("barplots_common_%s", mode),
+    result_type = "common",
+    filter_mode = mode
+  )
+  
+  cat(sprintf("\n--- SCORE+BLOCK | %s ---\n", mode))
+  create_all_importance_barplots(
+    importance_results = importance_results_full,
+    coefficient_directions = coefficient_directions_full,
+    output_dir = sprintf("barplots_score_plus_block_%s", mode),
+    result_type = "score_plus_block",
+    filter_mode = mode
+  )
+}
+
+cat("\n\u2713 All bar plots created (4 modes \u00d7 2 types = 8 output folders)\n")
+
+
+# ============================================
+# 21b. COMBINED FIGURE — COMMON positive_delta_3folds
+# ============================================
+
+library(patchwork)
+
+create_combined_importance_figure <- function(importance_results,
+                                              coefficient_directions,
+                                              blocks = NULL,
+                                              result_type = "common",
+                                              filter_mode = "positive_delta_3folds",
+                                              output_file = "combined_importance_common_positive_delta_3folds.pdf") {
+  
+  fold_data <- extract_per_fold_data(importance_results)
+  aggregated_df <- importance_results$aggregated
+  
+  dataset_labels <- c(
+    "all_data" = "Full predictor set", "lipids" = "Lipids",
+    "fatty_acids" = "Fatty Acids", "urine_nmr" = "Urine NMR Metabolites",
+    "body_composition" = "Body Composition",
+    "clinical_risk_factors" = "Clinical Measurements & Supplementary Biomarkers",
+    "sociodemographics_lifestyle" = "Sociodemographics & Lifestyle"
+  )
+  
+  if (is.null(blocks)) {
+    blocks <- c("all_data", "lipids", "fatty_acids", "urine_nmr",
+                "body_composition", "clinical_risk_factors",
+                "sociodemographics_lifestyle")
+  }
+  
+  # Collect plots that have results
+  plot_list <- list()
+  feature_counts <- c()
+  
+  for (block in blocks) {
+    label <- ifelse(block %in% names(dataset_labels), dataset_labels[block], block)
+    
+    result <- create_importance_barplot(
+      fold_data = fold_data,
+      coefficient_df = coefficient_directions,
+      aggregated_df = aggregated_df,
+      block_name = block,
+      block_label = label,
+      result_type = result_type,
+      filter_mode = filter_mode
+    )
+    
+    if (!is.null(result)) {
+      # Adjust individual plots for combined figure:
+      # - smaller title, remove subtitle, shrink axis text, remove legend
+      p_adjusted <- result$plot +
+        labs(subtitle = NULL) +
+        theme(
+          plot.title = element_text(face = "bold", hjust = 0.5, size = 11),
+          axis.text.x = element_text(
+            size = if (result$n_features > 30) 5 else if (result$n_features > 15) 7 else 9,
+            angle = 45, hjust = 1
+          ),
+          axis.text.y = element_text(size = 9),
+          axis.title.y = element_text(size = 9),
+          legend.position = "none",
+          plot.margin = margin(t = 5, r = 5, b = 5, l = 5)
+        )
+      
+      plot_list[[block]] <- p_adjusted
+      feature_counts <- c(feature_counts, result$n_features)
+      names(feature_counts)[length(feature_counts)] <- block
+    }
+  }
+  
+  if (length(plot_list) == 0) {
+    cat("No plots to combine\n")
+    return(NULL)
+  }
+  
+  cat(sprintf("Combining %d panels: %s\n",
+              length(plot_list),
+              paste(sprintf("%s (%d feat)", names(feature_counts), feature_counts), collapse = ", ")))
+  
+  # ---- Layout based on relative feature counts ----
+  n_panels <- length(plot_list)
+  
+  # Use relative widths proportional to feature count (with minimum)
+  rel_widths <- pmax(feature_counts / max(feature_counts), 0.3)
+  
+  # Arrange: put wider panels on top row, narrower on bottom
+  order_idx <- order(feature_counts, decreasing = TRUE)
+  ordered_plots <- plot_list[order_idx]
+  ordered_widths <- rel_widths[order_idx]
+  
+  if (n_panels <= 2) {
+    # Side by side
+    combined <- wrap_plots(ordered_plots, nrow = 1, widths = ordered_widths)
+  } else if (n_panels <= 4) {
+    # 2 rows: larger panels on top, smaller on bottom
+    n_top <- ceiling(n_panels / 2)
+    n_bot <- n_panels - n_top
+    
+    top_plots <- ordered_plots[1:n_top]
+    bot_plots <- ordered_plots[(n_top + 1):n_panels]
+    top_widths <- ordered_widths[1:n_top]
+    bot_widths <- ordered_widths[(n_top + 1):n_panels]
+    
+    top_row <- wrap_plots(top_plots, nrow = 1, widths = top_widths)
+    bot_row <- wrap_plots(bot_plots, nrow = 1, widths = bot_widths)
+    
+    combined <- top_row / bot_row
+  } else {
+    # 3 rows for 5+ panels
+    n_per_row <- ceiling(n_panels / 3)
+    rows <- list()
+    for (r in 1:3) {
+      start <- (r - 1) * n_per_row + 1
+      end <- min(r * n_per_row, n_panels)
+      if (start > n_panels) break
+      rows[[r]] <- wrap_plots(ordered_plots[start:end], nrow = 1,
+                              widths = ordered_widths[start:end])
+    }
+    combined <- Reduce("/", rows)
+  }
+  
+  # Add shared legend from first plot
+  legend_plot <- plot_list[[1]] +
+    theme(legend.position = "bottom",
+          legend.title = element_text(face = "bold", size = 10),
+          legend.text = element_text(size = 9))
+  shared_legend <- cowplot::get_legend(legend_plot)
+  
+  # Add overall title, subtitle, and shared legend
+  covariate_label <- paste(COVARIATE_COLS, collapse = ", ")
+  type_prefix <- if (result_type == "score_plus_block") "Score-Specific + " else ""
+  
+  final <- combined /
+    wrap_elements(shared_legend) +
+    plot_layout(heights = c(rep(1, if (n_panels <= 2) 1 else if (n_panels <= 4) 2 else 3), 0.08)) +
+    plot_annotation(
+      title = expression(bold("Permutation Feature Importance (positive" ~ Delta * "MAE in" >= "3 folds)")),
+      subtitle = sprintf("Adjusted for %s | Mean +/- SE | 1000 permutations/fold",
+                         covariate_label),
+      theme = theme(
+        plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+        plot.subtitle = element_text(size = 10, color = "gray40", hjust = 0.5)
+      )
+    )
+  
+  # ---- Save ----
+  total_features <- sum(feature_counts)
+  fig_width <- min(50, max(14, total_features * 0.25))
+  fig_height <- if (n_panels <= 2) 8 else if (n_panels <= 4) 14 else 20
+  
+  output_path <- save_output(output_file)
+  ggsave(output_path, final, width = fig_width, height = fig_height, limitsize = FALSE)
+  
+  cat(sprintf("\u2713 Combined figure saved to %s (%.0f x %.0f inches)\n",
+              output_file, fig_width, fig_height))
+  
+  invisible(final)
+}
+
+
+# ---- Run ----
+cat("\n=== Creating combined importance figure (common, positive_delta_3folds) ===\n")
+
+combined_fig <- create_combined_importance_figure(
   importance_results = importance_results_common,
   coefficient_directions = coefficient_directions_common,
-  output_dir = "importance_barplots_common"
+  blocks = c("all_data", "urine_nmr", "body_composition", "sociodemographics_lifestyle"),
+  result_type = "common",
+  filter_mode = "positive_delta_3folds",
+  output_file = "combined_importance_common_positive_delta_3folds.pdf"
 )
 
-cat("\n\u2713 All bar plots created\n")
+
+
+
+# ============================================
+# FIGURE 1: COMMON PREDICTORS — positive_delta_3folds
+# FIGURE 2: SCORE-SPECIFIC + BLOCK — positive_delta_3folds
+# ============================================
+
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(dplyr)
+
+
+# ================================================================
+# SHARED PANEL BUILDER
+# ================================================================
+
+build_importance_panel <- function(fold_data, coefficient_directions, aggregated_df,
+                                   block_name, result_type,
+                                   score_colours, cvd_order,
+                                   remove_score_specific = FALSE,
+                                   score_specific_regex = NULL) {
+  
+  # Filter fold data to this block
+  if (result_type == "score_plus_block") {
+    plot_data <- fold_data %>%
+      filter(grepl(paste0("_specific\\+", block_name, "$"), dataset_name))
+  } else {
+    plot_data <- fold_data %>% filter(dataset_name == block_name)
+  }
+  if (nrow(plot_data) == 0) return(NULL)
+  
+  # Remove score-specific features for Row B of figure 2
+  if (remove_score_specific && !is.null(score_specific_regex)) {
+    n_before <- length(unique(plot_data$feature))
+    plot_data <- plot_data %>% filter(!grepl(score_specific_regex, feature))
+    n_after <- length(unique(plot_data$feature))
+    cat(sprintf("    Removed %d score-specific features, %d remaining\n",
+                n_before - n_after, n_after))
+    if (nrow(plot_data) == 0) return(NULL)
+  }
+  
+  # Join coefficient directions
+  plot_data <- plot_data %>%
+    left_join(
+      coefficient_directions %>% select(cvd_score, dataset_name, feature, direction),
+      by = c("cvd_score", "dataset_name", "feature")
+    ) %>%
+    filter(!is.na(direction), direction != "Zero")
+  if (nrow(plot_data) == 0) return(NULL)
+  
+  # Recode score labels
+  plot_data <- plot_data %>%
+    mutate(
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+      cvd_label = factor(cvd_label, levels = cvd_order)
+    )
+  
+  # Filter: positive delta in >=3 folds
+  plot_data <- plot_data %>% filter(importance > 0)
+  fold_counts <- plot_data %>%
+    group_by(feature, cvd_label) %>%
+    summarise(n_nonzero = n(), .groups = "drop")
+  valid_combos <- fold_counts %>% filter(n_nonzero >= 3)
+  n_excluded <- nrow(fold_counts) - nrow(valid_combos)
+  plot_data <- plot_data %>% semi_join(valid_combos, by = c("feature", "cvd_label"))
+  if (nrow(plot_data) == 0) return(NULL)
+  
+  # Summarise
+  summary_data <- plot_data %>%
+    group_by(feature, cvd_label, direction) %>%
+    summarise(
+      mean_imp = mean(importance, na.rm = TRUE),
+      se_imp = sd(importance, na.rm = TRUE) / sqrt(sum(!is.na(importance))),
+      n_folds = n(), .groups = "drop"
+    ) %>%
+    mutate(
+      signed_mean = ifelse(direction == "Risk-Increasing", mean_imp, -mean_imp),
+      ymin = ifelse(direction == "Risk-Increasing", mean_imp - se_imp, -(mean_imp + se_imp)),
+      ymax = ifelse(direction == "Risk-Increasing", mean_imp + se_imp, -(mean_imp - se_imp))
+    )
+  
+  plot_data <- plot_data %>%
+    mutate(signed_importance = ifelse(direction == "Risk-Increasing", importance, -importance))
+  
+  # Significance stars
+  if (result_type == "score_plus_block") {
+    agg_filtered <- aggregated_df %>%
+      filter(grepl(paste0("_specific\\+", block_name, "$"), dataset_name))
+  } else {
+    agg_filtered <- aggregated_df %>% filter(dataset_name == block_name)
+  }
+  sig_data <- agg_filtered %>%
+    mutate(
+      cvd_label = recode(cvd_score,
+                         "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                         "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+      sig_star = case_when(
+        p_value_bh < 0.001 ~ "***", p_value_bh < 0.01 ~ "**",
+        p_value_bh < 0.05 ~ "*", TRUE ~ "")
+    ) %>% select(feature, cvd_label, sig_star)
+  
+  summary_data <- summary_data %>%
+    left_join(sig_data, by = c("feature", "cvd_label")) %>%
+    mutate(sig_star = ifelse(is.na(sig_star), "", sig_star))
+  
+  # Feature ordering
+  feat_inc <- summary_data %>% filter(direction == "Risk-Increasing") %>%
+    group_by(feature) %>% summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+    arrange(desc(max_imp)) %>% pull(feature)
+  feat_dec <- summary_data %>% filter(direction == "Risk-Decreasing") %>%
+    group_by(feature) %>% summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+    arrange(desc(max_imp)) %>% pull(feature)
+  feat_dec <- setdiff(feat_dec, feat_inc)
+  feature_levels <- c(feat_inc, feat_dec)
+  
+  # ---- Feature display name lookup ----
+  # Maps raw feature names (with underscores) to clean display names.
+  # Features not listed here fall back to default cleaning (underscores → spaces, first letter capitalised).
+  feature_display_names <- c(
+    # Clinical / score-specific
+    "systolic"                            = "Systolic BP",
+    "blood_pressure_treatment_Yes"        = "Blood Pressure Treatment",
+    "blood_pressure_treatment"            = "Blood Pressure Treatment",
+    "SmokingStatusQRISK3"                 = "Smoking",
+    "mean_Total_Cholesterol_mg_dl"        = "Total Cholesterol",
+    "ratio_chol_hdl"                      = "Cholesterol/HDL",
+    "creatinine"                          = "Creatinine",
+    "mean_LDL_mg_dl"                      = "LDL",
+    "LDL.mg.dl"                           = "LDL",
+    "TAG.mg.dl"                           = "TAG",
+    "mean_HDL_mg_dl"                      = "HDL",
+    "mean_hrt"                            = "Mean Heart Rate",
+    
+    # Lipids
+    "lpe_20_4"                            = "LPE(20:4)",
+    "pe_o_22_2_20_4"                      = "PE-O(22:2/20:4)",
+    
+    # Fatty acids
+    "rbc_linoleic_18_2n6"                 = "RBC Linoleic Acid (18:2n-6)",
+    "d_nervonic_24_1n9"                   = "d Nervonic Acid (24:1n-9)",
+    "d_dgla_20_3n6"                       = "d DGLA (20:3n-6)",
+    "rbc_dpa_22_5n3"                      = "RBC Docosapentaenoic Acid (22:5n-3)",
+    
+    # Urine NMR
+    "allantoin"                           = "Allantoin",
+    "lactic_acid"                         = "Lactic Acid",
+    "creatine"                            = "Creatine",
+    "proline_betaine"                     = "Proline Betaine",
+    
+    # Body composition
+    "ecw_tbw"                                              = "ECW/TBW",
+    "bmr__basal_metabolic_rate_"                           = "Basal Metabolic Rate",
+    "svr_skeletal_muscle_mass_visceral_fat_area_ratio_"    = "Skeletal Muscle Mass/Visceral Fat Area",
+    "smi__skeletal_muscle_index_"                          = "Skeletal Muscle Index",
+    "vfa__visceral_fat_area_"                              = "Visceral Fat Area",
+    "bfm_of_trunk"                                         = "Body Fat Mass of Trunk",
+    "Fat.free.mass"                                        = "Fat-Free Mass",
+    "Body.fat"                                             = "Body Fat",
+    "measured_circumference_of_right_thigh"                = "Right Thigh Circumference",
+    "measured_circumference_of_left_thigh"                 = "Left Thigh Circumference",
+    "sleep_quality"                                        = "Sleep Quality",
+    
+    # Sociodemographics
+    "naps_during_day_yes"                                  = "Naps During Day",
+    "Education_Level_4"                                    = "Doctoral",
+    "Education_Level_3"                                    = "University (Bachelor or Equivalent)",
+    "annual_net_salary_4"                                  = "Annual Net Salary >34,400\u201343,000",
+    "Living_Status_Living.with.a.partner"                  = "Living With a Partner",
+    "Employment_Status_Retired"                            = "Retired"
+  )
+  
+  # Capitalise first letter of each word as fallback
+  capitalise_words <- function(s) {
+    gsub("(^|\\s)(\\w)", "\\1\\U\\2", s, perl = TRUE)
+  }
+  
+  clean_name <- function(x) {
+    # Build a lowercase lookup for case-insensitive matching
+    lookup_lower <- setNames(feature_display_names, tolower(names(feature_display_names)))
+    sapply(x, function(feat) {
+      if (feat %in% names(feature_display_names)) {
+        feature_display_names[feat]
+      } else if (tolower(feat) %in% names(lookup_lower)) {
+        lookup_lower[tolower(feat)]
+      } else {
+        capitalise_words(gsub("_", " ", gsub("\\.", " ", feat)))
+      }
+    }, USE.NAMES = FALSE)
+  }
+  
+  clean_levels <- clean_name(feature_levels)
+  
+  summary_data <- summary_data %>%
+    mutate(feature_clean = factor(clean_name(feature), levels = clean_levels)) %>%
+    filter(feature %in% feature_levels)
+  plot_data <- plot_data %>%
+    mutate(feature_clean = factor(clean_name(feature), levels = clean_levels)) %>%
+    filter(feature %in% feature_levels)
+  
+  n_features <- length(feature_levels)
+  
+  # No-gap positioning
+  bar_width <- 0.18
+  gap_between_features <- 0.3
+  position_rows <- list()
+  current_x <- 1
+  feature_centers <- numeric(n_features)
+  
+  for (f_idx in seq_along(feature_levels)) {
+    feat <- feature_levels[f_idx]
+    scores_present <- summary_data %>%
+      filter(feature == feat) %>% arrange(cvd_label) %>%
+      pull(cvd_label) %>% as.character()
+    n_bars <- length(scores_present)
+    if (n_bars == 0) next
+    group_width <- n_bars * bar_width + (n_bars - 1) * 0.02
+    start_x <- current_x - group_width / 2 + bar_width / 2
+    feature_centers[f_idx] <- current_x
+    for (b_idx in seq_along(scores_present)) {
+      x_pos <- start_x + (b_idx - 1) * (bar_width + 0.02)
+      position_rows[[length(position_rows) + 1]] <- tibble(
+        feature = feat, cvd_label = scores_present[b_idx], x_pos = x_pos)
+    }
+    current_x <- current_x + gap_between_features + group_width / 2 + bar_width
+  }
+  
+  positions <- bind_rows(position_rows) %>%
+    mutate(cvd_label = factor(cvd_label, levels = cvd_order))
+  feature_tick_positions <- tibble(
+    feature = feature_levels,
+    feature_clean = factor(clean_levels, levels = clean_levels),
+    x_tick = feature_centers)
+  
+  summary_data <- summary_data %>% left_join(positions, by = c("feature", "cvd_label"))
+  plot_data <- plot_data %>% left_join(positions, by = c("feature", "cvd_label"))
+  
+  summary_data <- summary_data %>%
+    mutate(star_y = ifelse(direction == "Risk-Increasing",
+                           ymax + max(abs(signed_mean), na.rm = TRUE) * 0.05,
+                           ymin - max(abs(signed_mean), na.rm = TRUE) * 0.05))
+  
+  # Bigger feature text, adaptive
+  x_text_size <- if (n_features > 80) 10 else if (n_features > 50) 11 else if (n_features > 30) 12 else if (n_features > 15) 13 else 14
+  
+  # Build plot — no title, no subtitle (will be in figure legend)
+  p <- ggplot() +
+    geom_col(data = summary_data, aes(x = x_pos, y = signed_mean, fill = cvd_label),
+             width = bar_width, colour = "white", linewidth = 0.2) +
+    geom_errorbar(data = summary_data %>% filter(!is.na(se_imp) & se_imp > 0),
+                  aes(x = x_pos, ymin = ymin, ymax = ymax),
+                  width = bar_width * 0.5, linewidth = 0.4, colour = "grey30") +
+    geom_point(data = plot_data, aes(x = x_pos, y = signed_importance, fill = cvd_label),
+               shape = 21, size = 1.0, alpha = 0.5, colour = "grey30",
+               position = position_jitter(width = bar_width * 0.12, height = 0, seed = 42)) +
+    geom_text(data = summary_data %>% filter(sig_star != ""),
+              aes(x = x_pos, y = star_y, label = sig_star),
+              size = 4, fontface = "bold", colour = "black") +
+    geom_hline(yintercept = 0, linetype = "solid", color = "grey30", linewidth = 0.5) +
+    scale_fill_manual(values = score_colours, name = "CVD Risk Score",
+                      limits = cvd_order, drop = FALSE) +
+    scale_x_continuous(breaks = feature_tick_positions$x_tick,
+                       labels = feature_tick_positions$feature_clean,
+                       expand = expansion(add = 0.5)) +
+    labs(x = NULL, y = expression(Delta ~ "MAE (signed by effect direction)")) +
+    scale_y_continuous(expand = expansion(mult = c(0.01, 0.02))) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x = element_text(size = x_text_size, angle = 30, hjust = 1, vjust = 1),
+      axis.text.y = element_text(size = 11),
+      axis.title.y = element_text(size = 11),
+      legend.position = "none",
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.margin = margin(t = 5, r = 8, b = 2, l = 8))
+  
+  y_range <- range(c(summary_data$ymin, summary_data$ymax,
+                     plot_data$signed_importance), na.rm = TRUE)
+  list(plot = p, n_features = n_features, y_range = y_range, n_excluded = n_excluded)
+}
+
+
+# ================================================================
+# SHARED ASSEMBLY HELPER
+# ================================================================
+
+assemble_combined_figure <- function(panel_a, panels_b,
+                                     ylim_a, ylim_b,
+                                     score_colours, cvd_order,
+                                     output_file, fig_height = 12) {
+  
+  # Apply y-limits with panel tags A, B, C, D...
+  plot_a <- panel_a$plot + coord_cartesian(ylim = ylim_a, clip = "off") +
+    labs(tag = "A") +
+    theme(plot.tag = element_text(face = "bold", size = 16))
+  
+  b_list <- list()
+  panel_letters <- LETTERS[2:(1 + length(panels_b))]  # B, C, D, ...
+  for (i in seq_along(panels_b)) {
+    p_b <- panels_b[[i]]$plot +
+      coord_cartesian(ylim = ylim_b, clip = "off") +
+      labs(tag = panel_letters[i]) +
+      theme(plot.tag = element_text(face = "bold", size = 16))
+    # Only keep y-axis title on first B panel
+    if (i > 1) {
+      p_b <- p_b + labs(y = NULL)
+    }
+    b_list[[i]] <- p_b
+  }
+  
+  # Row B widths proportional to feature count
+  b_counts <- sapply(panels_b, function(x) x$n_features)
+  b_widths <- pmax(b_counts / max(b_counts), 0.25)
+  
+  row_a <- plot_a
+  row_b <- wrap_plots(b_list, nrow = 1, widths = b_widths)
+  
+  # Legend (no direction labels — will be in figure caption)
+  dummy_data <- tibble(x = 1:4, y = 1:4, cvd_label = factor(cvd_order, levels = cvd_order))
+  legend_plot <- ggplot(dummy_data, aes(x, y, fill = cvd_label)) + geom_col() +
+    scale_fill_manual(values = score_colours, limits = cvd_order,
+                      name = "CVD Risk Score", drop = FALSE) +
+    guides(fill = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom",
+          legend.title = element_text(face = "bold", size = 12),
+          legend.text = element_text(size = 11),
+          legend.key.size = unit(0.5, "cm"))
+  legend_row <- cowplot::get_legend(legend_plot)
+  
+  # Height ratio
+  height_ratio_b <- diff(ylim_b) / diff(ylim_a)
+  
+  combined <- (row_a / row_b / wrap_elements(legend_row)) +
+    plot_layout(heights = c(1, height_ratio_b, 0.06))
+  
+  # Save
+  total_b <- sum(b_counts)
+  fig_width <- min(50, max(16, max(panel_a$n_features, total_b) * 0.35))
+  
+  output_path <- save_output(output_file)
+  ggsave(output_path, combined, width = fig_width, height = fig_height, limitsize = FALSE)
+  cat(sprintf("\n\u2713 Figure saved to %s (%.0f x %.0f in)\n", output_file, fig_width, fig_height))
+  invisible(combined)
+}
+
+
+# ================================================================
+# FIGURE 1: COMMON PREDICTORS
+# ================================================================
+
+create_combined_figure_common <- function(importance_results,
+                                          coefficient_directions,
+                                          output_file = "combined_importance_common_v2.pdf") {
+  
+  score_colours <- c("ASCVD" = "#F8766D", "Framingham" = "#7CAE00",
+                     "QRISK3" = "#C77CFF", "SCORE2" = "#00BFC4")
+  cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
+  
+  fold_data <- extract_per_fold_data(importance_results)
+  aggregated_df <- importance_results$aggregated
+  
+  cat("\n--- Figure 1: Building Row A ---\n")
+  panel_a <- build_importance_panel(fold_data, coefficient_directions, aggregated_df,
+                                    "all_data", "common", score_colours, cvd_order)
+  if (is.null(panel_a)) { cat("Row A: no results\n"); return(NULL) }
+  cat(sprintf("  all_data: %d features\n", panel_a$n_features))
+  
+  cat("\n--- Figure 1: Building Row B ---\n")
+  row_b_blocks <- c("body_composition", "sociodemographics_lifestyle", "urine_nmr")
+  panels_b <- list()
+  for (block in row_b_blocks) {
+    res <- build_importance_panel(fold_data, coefficient_directions, aggregated_df,
+                                  block, "common", score_colours, cvd_order)
+    if (!is.null(res)) {
+      panels_b[[block]] <- res
+      cat(sprintf("  %s: %d features\n", block, res$n_features))
+    }
+  }
+  if (length(panels_b) == 0) { cat("No Row B panels\n"); return(NULL) }
+  
+  assemble_combined_figure(
+    panel_a, panels_b,
+    ylim_a = c(-0.4, 0.4),
+    ylim_b = c(-0.6, 0.4),
+    score_colours, cvd_order,
+    output_file, fig_height = 12
+  )
+}
+
+
+# ================================================================
+# FIGURE 2: SCORE-SPECIFIC + BLOCK
+# ================================================================
+
+create_combined_figure_score_plus_block <- function(importance_results,
+                                                    coefficient_directions,
+                                                    output_file = "combined_importance_score_plus_block_v2.pdf") {
+  
+  score_colours <- c("ASCVD" = "#F8766D", "Framingham" = "#7CAE00",
+                     "QRISK3" = "#C77CFF", "SCORE2" = "#00BFC4")
+  cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
+  
+  # Score-specific feature stems
+  score_specific_stems <- c(
+    "Sex", "Age",
+    "EthnicityCodeQRISK3", "SmokingStatusQRISK3",
+    "diabetes2", "Diabetes",
+    "Weight_kg", "Height_cm",
+    "blood_pressure_treatment",
+    "Severe_mental_illness",
+    "ratio_chol_hdl", "systolic", "townsend",
+    "race_ascvd",
+    "mean_Total_Cholesterol_mg_dl", "mean_HDL_mg_dl", "mean_LDL_mg_dl",
+    "Risk.region"
+  )
+  escaped_stems <- gsub("\\.", "\\\\.", score_specific_stems)
+  score_specific_regex <- paste0("^(", paste(escaped_stems, collapse = "|"), ")")
+  
+  fold_data <- extract_per_fold_data(importance_results)
+  aggregated_df <- importance_results$aggregated
+  
+  cat("\n--- Figure 2: Building Row A (all features) ---\n")
+  panel_a <- build_importance_panel(fold_data, coefficient_directions, aggregated_df,
+                                    "all_data", "score_plus_block", score_colours, cvd_order,
+                                    remove_score_specific = FALSE)
+  if (is.null(panel_a)) { cat("Row A: no results\n"); return(NULL) }
+  cat(sprintf("  all_data: %d features\n", panel_a$n_features))
+  
+  cat("\n--- Figure 2: Building Row B (score-specific excluded) ---\n")
+  all_b_blocks <- c("lipids", "fatty_acids", "urine_nmr", "body_composition",
+                    "clinical_risk_factors", "sociodemographics_lifestyle")
+  panels_b <- list()
+  for (block in all_b_blocks) {
+    cat(sprintf("  %s:\n", block))
+    res <- build_importance_panel(fold_data, coefficient_directions, aggregated_df,
+                                  block, "score_plus_block", score_colours, cvd_order,
+                                  remove_score_specific = TRUE,
+                                  score_specific_regex = score_specific_regex)
+    if (!is.null(res)) {
+      panels_b[[block]] <- res
+      cat(sprintf("    -> %d block-specific features in plot\n", res$n_features))
+    } else {
+      cat("    -> No block-specific features passing filter (skipped)\n")
+    }
+  }
+  if (length(panels_b) == 0) { cat("No Row B panels\n"); return(NULL) }
+  
+  # Row A y-axis: include negative range so labels sit near bars
+  pad_a <- diff(panel_a$y_range) * 0.05
+  ylim_a <- c(-0.5,
+              ceiling((panel_a$y_range[2] + pad_a) * 10) / 10)
+  
+  cat(sprintf("\n  Y-axis: A = (%.2f, %.2f), B = (-0.25, 0.25)\n", ylim_a[1], ylim_a[2]))
+  
+  assemble_combined_figure(
+    panel_a, panels_b,
+    ylim_a = ylim_a,
+    ylim_b = c(-0.25, 0.25),
+    score_colours, cvd_order,
+    output_file, fig_height = 12
+  )
+}
+
+
+# ================================================================
+# RUN BOTH
+# ================================================================
+
+cat("\n=== Figure 1: Common predictors ===\n")
+fig_common <- create_combined_figure_common(
+  importance_results = importance_results_common,
+  coefficient_directions = coefficient_directions_common,
+  output_file = "combined_importance_common_v2.pdf"
+)
+
+cat("\n=== Figure 2: Score-specific + block ===\n")
+fig_spb <- create_combined_figure_score_plus_block(
+  importance_results = importance_results_full,
+  coefficient_directions = coefficient_directions_full,
+  output_file = "combined_importance_score_plus_block_v2.pdf"
+)
