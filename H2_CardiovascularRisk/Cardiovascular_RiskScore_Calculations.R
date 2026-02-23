@@ -140,13 +140,12 @@ Framingham <- data.frame(
 plot_framigham <- ggplot(Framingham, aes(x = frs_10y)) +
   geom_histogram( # create the normal histogram
     bins = 20,
-    fill = "lightblue",
+    fill = "#8AAD40",
     color = "white"
   ) + 
   labs( # create the titles 
-    title = "Distribution of the Framingham Score",
-    subtitle = paste("Mean =", round(mean(Framingham$frs_10y, na.rm = TRUE), 2), "%",
-    "| N =", nrow(Framingham)),
+    title = NULL,
+    subtitle = NULL,
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
@@ -159,6 +158,10 @@ plot_framigham <- ggplot(Framingham, aes(x = frs_10y)) +
   geom_vline(
     aes(xintercept = mean(frs_10y, na.rm = TRUE)), # mean Framingham value
     color = "red", linetype = "dashed", size = 1
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
   )
 plot_framigham
 
@@ -211,14 +214,12 @@ ASCVD <- data.frame(
 plot_ASCVD <- ggplot(ASCVD, aes(x = ascvd_10y)) +
   geom_histogram( # create the normal histogram
     bins = 20,
-    fill = "lightblue",
+    fill = "#F8766D",
     color = "white"
   ) + 
   labs( # create the titles 
-    title = "Distribution of the ASCVD Score",
-    subtitle = paste("Mean =", round(mean(ASCVD$ascvd_10y, na.rm = TRUE), 2), "%",
-    "| N =", sum(!is.na(ASCVD$ascvd_10y))
-    ),
+    title = NULL,
+    subtitle = NULL,
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
@@ -231,6 +232,10 @@ plot_ASCVD <- ggplot(ASCVD, aes(x = ascvd_10y)) +
   geom_vline(
     aes(xintercept = mean(ascvd_10y, na.rm = TRUE)), # mean ASCVD value
     color = "red", linetype = "dashed", size = 1
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
   )
 plot_ASCVD
 
@@ -288,15 +293,12 @@ SCORE2 <- bind_rows(df_low_res, df_mod_res) %>%
 plot_SCORE2 <- ggplot(SCORE2, aes(x = SCORE2_score)) +
   geom_histogram(
     bins = 20,
-    fill = "lightblue",
+    fill = "#C77CFF",
     color = "white"
   ) + 
   labs(
-    title = "Distribution of the SCORE2 Score",
-    subtitle = paste(
-      "Mean =", round(mean(SCORE2$SCORE2_score, na.rm = TRUE), 2), "%",
-      "| N =", nrow(SCORE2)
-    ),
+    title = NULL,
+    subtitle = NULL,
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
@@ -309,6 +311,10 @@ plot_SCORE2 <- ggplot(SCORE2, aes(x = SCORE2_score)) +
   geom_vline(
     aes(xintercept = mean(SCORE2_score, na.rm = TRUE)),
     color = "red", linetype = "dashed", size = 1
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
   )
 plot_SCORE2
 
@@ -321,13 +327,12 @@ summary(SCORE2$SCORE2_score)        # summary stats
 plot_qrisk3 <- ggplot(QRISK3_sample_ID, aes(x = QRISK3_risk)) +
   geom_histogram(
     bins = 20,
-    fill = "lightblue",
+    fill = "#4DB8B0",
     color = "white"
   ) + 
   labs(
-    title = "Distribution of QRISK3 Score",
-    subtitle = paste("Mean =", round(mean(QRISK3_sample_ID$QRISK3_risk, na.rm = TRUE), 2), "%",
-                     "| N =", nrow(QRISK3_sample_ID)),
+    title = NULL,
+    subtitle = NULL,
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"
   ) +
@@ -340,6 +345,10 @@ plot_qrisk3 <- ggplot(QRISK3_sample_ID, aes(x = QRISK3_risk)) +
   geom_vline(
     aes(xintercept = mean(QRISK3_risk, na.rm = TRUE)),
     color = "red", linetype = "dashed", size = 1
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
   )
 plot_qrisk3
 ##---------------------------------------------------------------------##
@@ -391,21 +400,19 @@ plot_composite
 figures_path <- "/Users/luisadelius/Documents/Code/project_one/Figures"
 
 ### plotting the distribution plots in a combined figure
-combined_plot <- (plot_qrisk3 | plot_framigham | plot_ASCVD | plot_SCORE2) &
+combined_plot <- (plot_ASCVD | plot_framigham | plot_qrisk3 | plot_SCORE2) +
+  plot_annotation(tag_levels = 'A') &
   theme(
-    plot.title = element_text(size = 13, face = "bold"),
-    plot.subtitle = element_text(size = 11, color = "grey40"),
-    axis.title = element_text(size = 11),
-    axis.text = element_text(size = 11),
+    plot.tag = element_text(size = 18, face = "bold"),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
     axis.line = element_line(color = "black", linewidth = 0.3),
     panel.grid.minor = element_blank(),
     panel.background = element_rect(fill = "white"),
     plot.background = element_rect(fill = "white"),
     plot.margin = margin(5, 10, 5, 10)
   )
-
 combined_plot <- combined_plot & ylim(0, 30)
-
 combined_plot
 
 ggsave(
@@ -446,13 +453,12 @@ plot_A <- ggplot(df_long, aes(x = score_type, y = risk)) +
   geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
   geom_line(aes(group = PatientID), colour = "black", alpha = 0.25) +
   geom_point(size = 1.5, alpha = 0.7) +
-  scale_fill_discrete(
-    name = NULL,
-    labels = c(
-      "SCORE2_score" = "SCORE2",
-      "QRISK3_risk"  = "QRISK3",
-      "ascvd_10y"    = "ASCVD",
-      "frs_10y"      = "Framingham"
+  scale_fill_manual(
+    values = c(
+      "ascvd_10y"    = "#F8766D",
+      "frs_10y"      = "#8AAD40",
+      "QRISK3_risk"  = "#4DB8B0",
+      "SCORE2_score" = "#C77CFF"
     )
   ) +
   scale_x_discrete(
@@ -470,10 +476,10 @@ plot_A <- ggplot(df_long, aes(x = score_type, y = risk)) +
   ) +
   theme_bw() +
   theme(
-    legend.position = "right",
-    axis.text.x = element_text(angle = 25, hjust = 1, size = 12),
-    axis.text.y = element_text(size = 12),
-    axis.title = element_text(size = 14)
+    legend.position = "none",
+    axis.text.x = element_text(angle = 25, hjust = 1, size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title = element_text(size = 16)
   )
 
 plot_B <- as.data.frame(cor_kendall) %>%
@@ -481,7 +487,7 @@ plot_B <- as.data.frame(cor_kendall) %>%
   pivot_longer(-var1, names_to = "var2", values_to = "tau") %>%
   ggplot(aes(var1, var2, fill = tau)) +
   geom_tile() +
-  geom_text(aes(label = round(tau, 2)), size = 3.5) +
+  geom_text(aes(label = round(tau, 2)), size = 5) +
   scale_fill_gradient2(low = "blue", mid = "white", high = "red", limits = c(-1, 1)) +
   scale_x_discrete(
     labels = c(
@@ -502,8 +508,10 @@ plot_B <- as.data.frame(cor_kendall) %>%
   coord_equal() +
   theme_minimal() +
   theme(
-    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
-    axis.text.y = element_text(size = 12)
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+    axis.text.y = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
   ) +
   labs(x = "", y = "")
 
@@ -512,7 +520,7 @@ combined_fig <- (plot_A | plot_B) +
   plot_layout(widths = c(3, 1.5)) +
   plot_annotation(tag_levels = "A") &
   theme(
-    plot.tag = element_text(size = 12, face = "bold", family = "Arial")
+    plot.tag = element_text(size = 18, face = "bold")
   )
 
 combined_fig
