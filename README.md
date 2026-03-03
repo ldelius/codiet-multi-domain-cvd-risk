@@ -1,16 +1,14 @@
-# Associations with Cardiovascular Risk in the CoDiet Cohort
+# Multi-Domain Analysis of Predictors for Cardiovascular Risk Estimation in an Overweight and Obese Population
 ### An MRes Thesis Project (Biomedical Research – Data Science, Imperial College London)
 
 ## Abstract
 
-WIP: Cardiovascular disease (CVD) remains a leading cause of morbidity and mortality worldwide (Add Source here). ... 
-This thesis investigates features associated with established CVD risk scores using multi-domain data from the CoDiet cohort, including lipidomics, fatty acids, urine NMR, body composition, clinical risk factors and socio-demographic variables.
-We applied generalised liner model (GLM) and elastic net regression approaches to assess associations and predictive performance and identify contributors to CVD risk.
+Cardiovascular disease (CVD) remains the leading cause of mortality worldwide. Overweight and obesity are major and increasingly prevalent risk factors, yet established CVD risk scores do not adequately capture their risk and may underestimate CVD risk in this population. This work examines a multi-domain dataset comprising metabolomics (urinary metabolites, lipid profiles, fatty acids), clinical measurements, body composition metrics, and sociodemographic factors for their association with CVD risk and predictive utility, as assessed by four established 10-year CVD risk scores (ASCVD, Framingham, QRISK3, SCORE2). The overall study design is summarised in Figure 1.
 
 <p align="center">
   <img src="figures/graphical_abstract.png" width="700">
 </p>
-**Figure 1.** Graphical abstract illustrating the data sources and workflow used in this thesis.
+**Figure 1.** Overview of the study design.
 <br><br>
 This repository contains the full analysis pipeline used for data preprocessing, model training, evaluation, and visualisation.
 
