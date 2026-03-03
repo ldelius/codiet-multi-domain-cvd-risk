@@ -6,7 +6,7 @@
 Cardiovascular disease (CVD) remains the leading cause of mortality worldwide. Overweight and obesity are major and increasingly prevalent risk factors, yet established CVD risk scores do not adequately capture their risk and may underestimate CVD risk in this population. This work examines a multi-domain dataset comprising metabolomics (urinary metabolites, lipid profiles, fatty acids), clinical measurements, body composition metrics, and sociodemographic factors for their association with CVD risk and predictive utility, as assessed by four established 10-year CVD risk scores (ASCVD, Framingham, QRISK3, SCORE2). The overall study design is summarised in Figure 1.
 
 <p align="center">
-  <img src="figures/study_design_3.png" width="700">
+  <img src="Figures/study_design_3.png" width="700">
 </p>
 **Figure 1.** Overview of the study design.
 <br><br>
