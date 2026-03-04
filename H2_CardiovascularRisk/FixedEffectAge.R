@@ -206,10 +206,10 @@ cat("Combined results saved.\n")
 # ─── 7. Plotting Helpers ─────────────────────────────────────────────────────
 rename_predictors <- function(term_plot) {
   case_when(
-    term_plot == "z_whtr_waist_height_ratio_"      ~ "Waist / Height",
-    term_plot == "z_LDL.mg.dl"                     ~ "LDL",
+    term_plot == "z_whtr_waist_height_ratio_"      ~ "Waist-to-Height Ratio",
+    term_plot == "z_LDL.mg.dl"                     ~ "LDL cholesterol",
     term_plot == "z_Hba1C"                         ~ "HbA1c",
-    term_plot == "z_TAG.mg.dl"                    ~ "TAG",
+    term_plot == "z_TAG.mg.dl"                    ~ "Triacylglycerol",
     term_plot == "z_d_stearic_18_0"                ~ "Stearic acid (18:0)",
     term_plot == "z_fahfa_18_1_18_0"              ~ "FAHFA 18:1/18:0",
     term_plot == "z_tartaric_acid"                ~ "Tartaric Acid",
@@ -382,7 +382,7 @@ p_b_cont <- ggplot(panel_b_cont,
              shape = 21, size = 3, fill = "black", colour = "white", stroke = 0.5) +
   facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
   fill_continuous +
-  labs(x = "Cardiovascular risk score", y = "Continuous Predictors") +
+  labs(x = NULL, y = "Continuous Predictors") +
   theme_heatmap +
   theme(
     axis.text.x  = element_text(size = 14, angle = 45, hjust = 1),
@@ -398,15 +398,6 @@ n_b_cont <- length(unique(panel_b_cont$term_plot_clean))
 combined_final <- title_a / p_a_cont / title_b / p_b_cont +
   plot_layout(
     heights = c(1, n_a_cont, 1, n_b_cont)
-  ) +
-  plot_annotation(
-    caption = paste0(
-      "Model: outcome ~ predictor + Statins + Supplements + Sex + Country + Age (Gamma GLM, log link)\n",
-      "Multiple testing correction: Benjamini–Hochberg\n"
-    ),
-    theme = theme(
-      plot.caption = element_text(size = 11, hjust = 0)
-    )
   )
 
 # ── Save ─────────────────────────────────────────────────────────────────────
