@@ -16,11 +16,10 @@
 # ---- 1.1 Load packages ----
 library(tidyverse)
 library(tidymodels)
-library(vip)
 library(future)
 library(qs2)
 library(plsmod)
-library(writexl)
+library(openxlsx)
 library(flextable)
 library(officer)
 library(patchwork)
@@ -695,8 +694,16 @@ excel_output <- list(
   Model_Rankings    = model_rankings,
   Outer_Fold_Detail = all_outer_folds
 )
-write_xlsx(excel_output, file.path(output_dir, "nested_cv_model_comparison_results.xlsx"))
 
+wb <- createWorkbook()
+for (sheet_name in names(excel_output)) {
+  addWorksheet(wb, sheet_name)
+  writeData(wb, sheet_name, excel_output[[sheet_name]])
+  freezePane(wb, sheet_name, firstRow = TRUE)
+  setColWidths(wb, sheet_name, cols = 1:ncol(excel_output[[sheet_name]]), widths = "auto")
+}
+
+saveWorkbook(wb, file.path(output_dir, "nested_cv_model_comparison_results.xlsx"), overwrite = TRUE)
 qs2::qs_save(list(
   metrics        = all_metrics,
   outer_folds    = all_outer_folds,
@@ -814,14 +821,14 @@ ft <- flextable(all_rows) %>%
     Model_R = "Model", TrainR2_R = "Train R\u00b2", Q2_R = "Q\u00b2",
     CVMAE_R = "CV MAE", Ratio_R = "Q\u00b2/R\u00b2"
   ) %>%
-  font(fontname = "Arial", part = "all") %>%
-  fontsize(size = 9, part = "body") %>%
-  fontsize(size = 9, part = "header") %>%
-  bold(part = "header") %>%
-  bold(i = label_row_indices, j = c(1, 7), part = "body") %>%
-  fontsize(i = label_row_indices, size = 11, part = "body") %>%
-  italic(i = dataset_label_indices, j = c(1, 7), part = "body") %>%
-  fontsize(i = dataset_label_indices, size = 9, part = "body") %>%
+  style(part = "body",
+        pr_t = fp_text(font.size = 9, font.family = "Arial")) %>%
+  style(part = "header",
+        pr_t = fp_text(font.size = 9, font.family = "Arial", bold = TRUE)) %>%
+  style(i = label_row_indices, j = c(1, 7), part = "body",
+        pr_t = fp_text(font.size = 11, font.family = "Arial", bold = TRUE)) %>%
+  style(i = dataset_label_indices, j = c(1, 7), part = "body",
+        pr_t = fp_text(font.size = 9, font.family = "Arial", italic = TRUE)) %>%
   align(j = c(1, 7), align = "left", part = "all") %>%
   align(j = c(2:5, 8:11), align = "center", part = "all") %>%
   align(j = 6, align = "center", part = "all") %>%
@@ -1315,12 +1322,15 @@ if (nrow(all_best_params) > 0) {
     # Create flextable
     ft_params <- flextable(table_rows) %>%
       font(fontname = "Arial", part = "all") %>%
-      fontsize(size = 9, part = "body") %>%
-      fontsize(size = 9, part = "header") %>%
-      bold(part = "header") %>%
-      bold(i = model_header_indices, j = 1, part = "body") %>%
-      italic(i = setdiff(seq_len(nrow(table_rows)), model_header_indices),
-             j = 1, part = "body") %>%
+      style(part = "body",
+            pr_t = fp_text(font.size = 9, font.family = "Arial")) %>%
+      style(part = "header",
+            pr_t = fp_text(font.size = 9, font.family = "Arial", bold = TRUE)) %>%
+      style(i = model_header_indices, j = 1, part = "body",
+            pr_t = fp_text(font.size = 9, font.family = "Arial", bold = TRUE)) %>%
+      style(i = setdiff(seq_len(nrow(table_rows)), model_header_indices),
+            j = 1, part = "body",
+            pr_t = fp_text(font.size = 9, font.family = "Arial", italic = TRUE)) %>%
       align(j = 1, align = "left", part = "all") %>%
       align(j = 2:5, align = "center", part = "all") %>%
       width(j = 1, width = 1.8) %>%
@@ -1356,8 +1366,13 @@ if (nrow(all_best_params) > 0) {
     select(dataset, outcome_label, model_label, param_label, value) %>%
     pivot_wider(names_from = outcome_label, values_from = value)
   
-  write_xlsx(list(Selected_Hyperparameters = params_wide),
-             file.path(output_dir, "selected_hyperparameters.xlsx"))
+  wb_hp <- createWorkbook()
+  addWorksheet(wb_hp, "Selected_Hyperparameters")
+  writeData(wb_hp, "Selected_Hyperparameters", params_wide)
+  freezePane(wb_hp, "Selected_Hyperparameters", firstRow = TRUE)
+  setColWidths(wb_hp, "Selected_Hyperparameters", cols = 1:ncol(params_wide), widths = "auto")
+  saveWorkbook(wb_hp, file.path(output_dir, "selected_hyperparameters.xlsx"), overwrite = TRUE)
+  
   cat("  Saved selected_hyperparameters.xlsx\n")
   
 } else {
