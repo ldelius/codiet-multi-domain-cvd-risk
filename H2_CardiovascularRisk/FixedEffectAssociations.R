@@ -207,7 +207,7 @@ rename_predictors <- function(term_plot) {
     term_plot == "z_Trigonelline"                   ~ "Trigonelline",
     term_plot == "z_Hba1C"                         ~ "HbA1c",
     term_plot == "z_ALT.unit.L"                    ~ "Alanine aminotransferase (ALT)",
-    term_plot == "z_LDL.mg.dl"                     ~ "LDL",
+    term_plot == "z_LDL.mg.dl"                     ~ "LDL cholesterol",
     term_plot == "z_3_hydroxybutyric_acid"         ~ "3-Hydroxybutyric acid",
     term_plot == "z_hippuric_acid"                 ~ "Hippuric acid",
     TRUE ~ term_plot
@@ -410,7 +410,7 @@ p_b_cont <- ggplot(panel_b_cont,
              shape = 21, size = 3, fill = "black", colour = "white", stroke = 0.5) +
   facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y") +
   fill_continuous +
-  labs(x = "Cardiovascular risk score", y = "Continuous Predictors") +
+  labs(x = NULL, y = "Continuous Predictors") +
   theme_heatmap +
   theme(
     axis.text.x  = element_text(size = 14, angle = 45, hjust = 1),
@@ -427,18 +427,8 @@ n_b_cont <- length(unique(panel_b_cont$term_plot_clean))
 combined_final <- title_a / p_a_cont / p_a_cat / title_b / p_b_cont +
   plot_layout(
     heights = c(1, n_a_cont, n_a_cat, 1, n_b_cont)
-  ) +
-  plot_annotation(
-    caption = paste0(
-      "Model: outcome ~ predictor + Statins + Supplements + Sex + Country (Gamma GLM, log link)\n",
-      "Multiple testing correction: Benjamini–Hochberg\n",
-      "Reference levels — Daytime naps: vs no naps | Living with partner/family: vs living alone | ",
-      "Retired/Non-working: vs employed"
-    ),
-    theme = theme(
-      plot.caption = element_text(size = 11, hjust = 0)
-    )
   )
+  
 
 # ── Save ─────────────────────────────────────────────────────────────────────
 
@@ -588,13 +578,36 @@ run_deviance <- function(data, predictors, fixed_effects, outcomes, predictor_se
     mutate(predictor_set = predictor_set_label)
 }
 
+
+
+# ─── 11b. Deviance for Factor Predictors ─────────────────────────────────────
+run_deviance_fac <- function(data, predictors, fixed_effects, outcomes, predictor_set_label) {
+  fixed_part <- paste(fixed_effects, collapse = " + ")
+  
+  map_dfr(predictors, function(var) {
+    map_dfr(outcomes, function(outcome) {
+      df_pair <- data %>%
+        select(all_of(c(outcome, var, fixed_effects))) %>%
+        drop_na()
+      
+      if (length(levels(df_pair[[var]])) < 2 || nrow(df_pair) == 0) return(tibble())
+      
+      model <- glm(as.formula(paste(outcome, "~", var, "+", fixed_part)),
+                   data = df_pair, family = Gamma(link = "log"))
+      calc_deviance_stats(model, var, outcome, nrow(df_pair))
+    })
+  }) %>%
+    mutate(predictor_set = predictor_set_label)
+}
+
 deviance_all <- bind_rows(
-  run_deviance(df_cvd_and_lipidomics,   lipid_predictors,       fixed_effects, outcomes, "Lipids"),
-  run_deviance(df_cvd_and_fatty_acids,  fatty_acid_predictors,  fixed_effects, outcomes, "Fatty acids"),
-  run_deviance(df_cvd_and_risk_factors, risk_factor_predictors, fixed_effects, outcomes, "Risk factors"),
-  run_deviance(df_cvd_and_body_comp,    body_comp_predictors,   fixed_effects, outcomes, "Body composition"),
-  run_deviance(df_cvd_and_urine_nmr,    urine_nmr_predictors,  fixed_effects, outcomes, "Urine NMR"),
-  run_deviance(df_cvd_and_REDcap,       REDcap_numeric_preds,  fixed_effects, outcomes, "REDCap numeric")
+  run_deviance(df_cvd_and_lipidomics,       lipid_predictors,       fixed_effects, outcomes, "Lipids"),
+  run_deviance(df_cvd_and_fatty_acids,      fatty_acid_predictors,  fixed_effects, outcomes, "Fatty acids"),
+  run_deviance(df_cvd_and_risk_factors,     risk_factor_predictors, fixed_effects, outcomes, "Risk factors"),
+  run_deviance(df_cvd_and_body_comp,        body_comp_predictors,   fixed_effects, outcomes, "Body composition"),
+  run_deviance(df_cvd_and_urine_nmr,        urine_nmr_predictors,  fixed_effects, outcomes, "Urine NMR"),
+  run_deviance(df_cvd_and_REDcap,           REDcap_numeric_preds,  fixed_effects, outcomes, "REDCap numeric"),
+  run_deviance_fac(df_cvd_and_REDcap,       REDcap_factor_preds,   fixed_effects, outcomes, "REDCap factors")
 )
 
 deviance_summary <- deviance_all %>%
@@ -610,6 +623,9 @@ deviance_summary <- deviance_all %>%
 
 cat("\nDeviance Summary by Outcome:\n")
 print(deviance_summary)
+
+
+
 
 # ─── 12. DHARMa Diagnostics ─────────────────────────────────────────────────
 dharma_results <- map_dfr(outcomes, function(outcome) {
