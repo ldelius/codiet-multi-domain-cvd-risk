@@ -1,3 +1,5 @@
+> This repository is a redacted public export of the original private research repository. Only the review-relevant code and non-sensitive files were retained, with commit history preserved for the retained subset.
+
 # Multi-Domain Analysis of Predictors for Cardiovascular Risk Estimation in an Overweight and Obese Population
 ### An MRes Thesis Project (Biomedical Research – Data Science, Imperial College London)
 
@@ -8,7 +10,7 @@ Cardiovascular disease (CVD) remains the leading cause of mortality worldwide. O
 <p align="center">
   <img src="Figures/study_design_3.png" width="700">
 </p>
-**Figure 1.** Overview of the study design.
+Figure 1. Overview of the study design.
 <br><br>
 Participant-level data from the CoDiet cohort cannot be shared publicly. This repository contains all scripts used for the analyses and visualisations presented in this thesis.
 
