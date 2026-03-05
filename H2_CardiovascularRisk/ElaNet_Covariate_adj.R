@@ -1,10 +1,15 @@
+################################################################################
 ### Elastic Net Regression with Covariate Adjustment (Country, Statins, Supplements unpenalised)
-### Preprocessing Inside Each CV-Fold (No Data Leakage)
+### Description: Fits covariate-adjusted Elastic Net models predicting CVD risk scores from multi-domain predictor sets.
+### Model evaluation; permutation test and permutation-based feature importance.
+### tables and figures.
+### Based on code in ElaNet_foldwise_preproc.R.
 ### Author: Luisa Delius
-### Based on original pipeline; adjusted for covariates, removed composite score & metabolites block
+################################################################################
+
 
 # ============================================
-# SETUP
+# Set everything up
 # ============================================
 library(glmnet)
 library(tidyverse)
@@ -20,7 +25,6 @@ library(cowplot)
 set.seed(42)
 
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files/processed_data"
-knitr::opts_knit$set(root.dir = wkdir)
 setwd(wkdir)
 
 create_output_folder <- function(base_name = "elastic_net_covariate_adjusted") {
@@ -38,11 +42,10 @@ create_output_folder <- function(base_name = "elastic_net_covariate_adjusted") {
 OUTPUT_DIR <- create_output_folder()
 save_output <- function(filename) file.path(OUTPUT_DIR, filename)
 
-CPUS <- parallel::detectCores() - 2
-cat(sprintf("Using %d CPU cores for parallel processing\n", CPUS))
+CPUS <- parallel::detectCores() - 3
 
 # ============================================
-# 1. DATA LOADING
+# 1. Load data
 # ============================================
 
 df_fatty_acids_raw_full <- readRDS("df_fatty_acids_predictor_statin_suppl.rds")
@@ -57,7 +60,7 @@ df_ascvd_frs_score2_input <- readRDS("ASCVD_SCORE2_Framingham_input.rds") %>%
 df_QRISK3_input <- readRDS("QRISK3_calculation_input.rds") %>%
   rename(Sample_ID = PatientID)
 
-# Source covariates BEFORE dropping them (df_QRISK3_input must be loaded first)
+# Source covariates before dropping them (df_QRISK3_input must be loaded first)
 df_covariates <- df_fatty_acids_raw_full %>%
   select(Sample_ID, Statins, Supplements) %>%
   full_join(df_risk_factors_raw_full %>% select(Sample_ID, Country), by = "Sample_ID") %>%
@@ -65,10 +68,8 @@ df_covariates <- df_fatty_acids_raw_full %>%
   distinct(Sample_ID, .keep_all = TRUE)
 
 COVARIATE_COLS <- c("Country", "Statins", "Supplements")
-COVARIATE_COLS_COMMON <- c("Country", "Statins", "Supplements", "Sex", "Age")
-cat(sprintf("✓ Covariates table: %d samples\n", nrow(df_covariates)))
 
-df_fatty_acids_ElaNet <- readRDS("df_fatty_acids_predictor_statin_suppl.rds") %>%
+df_fatty_acids_ElaNet <- df_fatty_acids_raw_full %>%
   select(-starts_with("z_"), -QRISK3_risk, -Statins, -Supplements)
 
 df_lipidomics_ElaNet <- readRDS("df_lipidomics_predictor_statin_suppl.rds") %>%
@@ -84,9 +85,9 @@ df_body_composition_ElaNet <- readRDS("df_body_composition_metrics.rds") %>%
   filter(!is.na(Sample_ID))
 
 df_REDcap_demographics_ElaNet <- readRDS("df_REDcap_demographics_ElaNet.rds") %>%
-  select(-starts_with("z_"), -QRISK3_risk, -recruitment_site, -any_of(COVARIATE_COLS_COMMON))
+  select(-starts_with("z_"), -QRISK3_risk, -recruitment_site, -any_of(COVARIATE_COLS))
 
-df_risk_factors_ElaNet <- readRDS("df_risk_factor_predictors.rds") %>%
+df_risk_factors_ElaNet <- df_risk_factors_raw_full %>%
   select(-starts_with("z_"), -QRISK3_risk,
          -Heart.Rate, -Age, -Total.Cholesterol.mg.dl, -HDL.mg.dl,
          -Body.Weight, -Height, -BMI, -Gender,
@@ -100,7 +101,7 @@ df_all_cvd_risk_scores_ElaNet <- readRDS("df_all_risk_scores.rds") %>%
 CVD_scores <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
 
 # ============================================
-# 2. CREATE DATASETS
+# 2. Create predictor sets
 # ============================================
 
 attach_covariates <- function(datasets_list, covariate_cols = COVARIATE_COLS) {
@@ -183,21 +184,10 @@ score_specific_datasets <- list(
   ascvd_10y = df_model0_ascvd
 )
 
-# ---- Body Composition + Height/Weight ----
-height_weight_vars <- df_QRISK3_input %>% select(Sample_ID, Height_cm, Weight_kg)
-df_body_comp_extended <- df_body_composition_ElaNet %>%
-  full_join(height_weight_vars, by = "Sample_ID") %>%
-  full_join(df_all_cvd_risk_scores_ElaNet, by = "Sample_ID") %>%
-  attach_covariates_single(COVARIATE_COLS_COMMON)
-
-scores_without_ht_wt <- c("SCORE2_score", "ascvd_10y", "frs_10y")
-
-cat("✓ All datasets created with covariates attached\n")
-
 # ============================================
-# 3. PREPROCESSING FUNCTIONS
+# 3. Preprocessing and helper functions
 # ============================================
-
+# missingness exclusion
 filter_by_missingness <- function(df, exclude_cols, col_miss_thresh = 0.4, row_miss_thresh = 0.8) {
   pred_cols <- setdiff(names(df), exclude_cols)
   col_miss_rates <- sapply(df[pred_cols], function(x) mean(is.na(x)))
@@ -213,6 +203,7 @@ filter_by_missingness <- function(df, exclude_cols, col_miss_thresh = 0.4, row_m
   df[rows_to_keep, c(intersect(exclude_cols, names(df)), cols_to_keep), drop = FALSE]
 }
 
+# preprocessing recipe
 preprocess_train_test <- function(df_train, df_test, exclude_cols = NULL,
                                   covariate_cols = COVARIATE_COLS, k = 5) {
   pred_cols <- setdiff(names(df_train), exclude_cols)
@@ -232,11 +223,8 @@ preprocess_train_test <- function(df_train, df_test, exclude_cols = NULL,
        feature_names = common_cols, is_covariate = is_covariate)
 }
 
-# ============================================
-# 3.5 HELPER: Alpha selection by minimum RMSE
-# ============================================
-
-select_best_alpha <- function(cv_results, alpha_grid, nfolds) {
+# Alpha selection by minimum RMSE
+select_best_alpha <- function(cv_results, alpha_grid) {
   cv_rmse_vals <- sapply(cv_results, function(x) {
     idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se)
     sqrt(x$cv_fit$cvm[idx])
@@ -246,13 +234,7 @@ select_best_alpha <- function(cv_results, alpha_grid, nfolds) {
        best_rmse = cv_rmse_vals[best_idx], all_rmse = cv_rmse_vals)
 }
 
-# ============================================
-# 3.6 HELPER: Stratified fold assignment for continuous outcomes
-# ============================================
-# Bins continuous outcome into nfolds quantile strata, then assigns
-# observations within each stratum to folds as evenly as possible.
-# This ensures each fold has a similar outcome distribution.
-
+# Stratified fold assignment for continuous outcomes
 create_stratified_folds <- function(y, nfolds, seed = NULL) {
   if (!is.null(seed)) set.seed(seed)
   n <- length(y)
@@ -270,7 +252,7 @@ create_stratified_folds <- function(y, nfolds, seed = NULL) {
 }
 
 # ============================================
-# 4. PERMUTATION TEST FUNCTION
+# 4. Permutation test function
 # ============================================
 
 compute_permutation_Q2 <- function(df_raw, y_shuffled, exclude_cols,
@@ -295,12 +277,7 @@ compute_permutation_Q2 <- function(df_raw, y_shuffled, exclude_cols,
     }
     if (valid_count == 0) return(NA_real_)
     valid_alphas <- sapply(cv_results, function(x) x$alpha)
-    alpha_selection <- tryCatch(
-      select_best_alpha(cv_results, valid_alphas, nfolds),
-      error = function(e) {
-        rmse_vals <- sapply(cv_results, function(x) { idx <- which(x$cv_fit$lambda == x$cv_fit$lambda.1se); sqrt(x$cv_fit$cvm[idx]) })
-        list(best_idx = which.min(rmse_vals))
-      })
+    alpha_selection <- select_best_alpha(cv_results, valid_alphas)
     best_cv_fit <- cv_results[[alpha_selection$best_idx]]$cv_fit
     y_oof[idx_test] <- as.numeric(predict(best_cv_fit, newx = preprocessed$X_test, s = "lambda.1se"))
   }
@@ -325,7 +302,7 @@ run_permutation_test <- function(df_raw, y, exclude_cols, observed_Q2,
 }
 
 # ============================================
-# 5. HELPER FUNCTIONS
+# 5. Helper functions
 # ============================================
 
 prep_extra_predictors <- function(extra_df) {
@@ -340,7 +317,7 @@ build_score_plus_block <- function(score, block_name, score_specific_datasets, d
 }
 
 # ============================================
-# 6. CORE ELASTIC NET FUNCTION (WITH COVARIATE ADJUSTMENT)
+# 6. Core Elastic Net function
 # ============================================
 
 get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
@@ -375,7 +352,7 @@ get_oof_predictions_clean <- function(df_raw, y, exclude_cols,
       list(alpha = a, cv_fit = cv_fit)
     })
     
-    alpha_selection <- select_best_alpha(cv_results_fold, alpha_grid, nfolds)
+    alpha_selection <- select_best_alpha(cv_results_fold, alpha_grid)
     alpha_selected_per_fold[k] <- alpha_grid[alpha_selection$best_idx]
     best_cv_fit <- cv_results_fold[[alpha_selection$best_idx]]$cv_fit
     
@@ -425,7 +402,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   cat(sprintf("  Sample size after filtering: %d\n", n_obs))
   if (n_obs < nfolds * 2) warning(sprintf("Very few observations (%d) for %d-fold CV", n_obs, nfolds))
   
-  # PART A: Full-data model (for coefficients)
+  # Full-data model (for coefficients)
   preprocessed_full <- preprocess_train_test(df_filtered, df_filtered, all_exclude, covariate_cols)
   X_full <- preprocessed_full$X_train; n_pred <- ncol(X_full)
   predictor_names <- colnames(X_full)
@@ -445,7 +422,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
     list(alpha = a, cv_fit = cv_fit)
   })
   
-  alpha_selection <- select_best_alpha(cv_results, alpha_grid, nfolds)
+  alpha_selection <- select_best_alpha(cv_results, alpha_grid)
   best_alpha_fulldata <- alpha_grid[alpha_selection$best_idx]
   best_cv_fit <- cv_results[[alpha_selection$best_idx]]$cv_fit
   cat(sprintf("  Alpha selection: min RMSE = %.4f at alpha = %.1f\n",
@@ -460,13 +437,13 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   coef_vector <- as.numeric(final_coef[-1]); names(coef_vector) <- predictor_names
   n_nonzero <- sum(coef_vector != 0)
   
-  # PART B: In-sample predictions (R²_Y)
+  # In-sample predictions (R²_Y)
   y_pred_in <- as.numeric(predict(best_cv_fit, newx = X_full, s = "lambda.1se"))
   res_in <- y - y_pred_in
   rmse_in <- sqrt(mean(res_in^2)); mae_in <- mean(abs(res_in))
   R2_Y <- 1 - sum(res_in^2) / sum((y - mean(y))^2); cor_in <- cor(y_pred_in, y)
   
-  # PART C: Out-of-fold predictions (Q²_Y)
+  # Out-of-fold predictions (Q²_Y)
   oof_results <- get_oof_predictions_clean(df_filtered, y, all_exclude, covariate_cols, alpha_grid, nfolds, seed + 100)
   y_pred_oof <- oof_results$predictions; alpha_per_fold <- oof_results$alpha_per_fold
   Q2_per_fold <- oof_results$Q2_per_fold
@@ -480,11 +457,11 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
   R2_per_fold <- oof_results$R2_per_fold
   R2_fold_mean <- mean(R2_per_fold); R2_fold_sd <- sd(R2_per_fold)
   
-  # PART D: Model quality metrics
+  # Model quality metrics
   Q2_R2_ratio <- Q2_Y / R2_Y; R2_Q2_gap <- R2_Y - Q2_Y
   dev_explained <- best_cv_fit$glmnet.fit$dev.ratio[which.min(abs(best_cv_fit$glmnet.fit$lambda - lambda_1se))]
   
-  # PART E: Permutation test
+  # Permutation test
   if (n_permutations > 0) {
     perm_results <- run_permutation_test(df_filtered, y, all_exclude, Q2_Y, n_permutations, alpha_grid, nfolds, seed + 200)
     perm_p_value <- perm_results$p_value; perm_n_completed <- perm_results$n_permutations_completed
@@ -520,7 +497,6 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
     RMSE_fold_mean = RMSE_fold_mean, RMSE_fold_sd = RMSE_fold_sd,
     MAE_per_fold = list(MAE_per_fold), RMSE_per_fold = list(RMSE_per_fold),
     Q2_Y_cor = cor_oof, Q2_fold_mean = Q2_fold_mean, Q2_fold_sd = Q2_fold_sd,
-    Q2_fold_summary = sprintf("%.3f +/- %.3f", Q2_fold_mean, Q2_fold_sd),
     Q2_per_fold = list(Q2_per_fold), Q2_R2_ratio = Q2_R2_ratio, R2_Q2_gap = R2_Q2_gap,
     permutation_p_value = perm_p_value, permutation_n = perm_n_completed,
     permutation_null_mean_Q2 = perm_null_mean, pct_deviance_explained = dev_explained * 100,
@@ -537,7 +513,7 @@ run_elastic_net_model <- function(df_raw, outcome_col, cvd_score_name, dataset_n
 }
 
 # ============================================
-# 7. MODEL RUNNER FUNCTIONS WITH INCREMENTAL SAVING
+# 7. Model runner functions with incremental saving
 # ============================================
 
 run_score_specific_models <- function(score_specific_datasets, alpha_grid = seq(0, 1, by = 0.1),
@@ -546,10 +522,8 @@ run_score_specific_models <- function(score_specific_datasets, alpha_grid = seq(
   results_list <- list(); n_models <- length(score_specific_datasets)
   incremental_dir <- save_output("incremental_saves_specific")
   dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
-  cat("==========================================================\n")
-  cat("ELASTIC NET (COV-ADJUSTED): SCORE-SPECIFIC DATASETS\n")
+  cat("Elastic Net (cov-adjusted): Score-specific datasets\n")
   cat(sprintf("Models: %d | Perms: %d | Covariates: %s\n", n_models, n_permutations, paste(covariate_cols, collapse = ", ")))
-  cat("==========================================================\n")
   for (i in seq_along(score_specific_datasets)) {
     cvd_score <- names(score_specific_datasets)[i]; df <- score_specific_datasets[[i]]
     dataset_name <- paste0(cvd_score, "_specific")
@@ -575,10 +549,8 @@ run_common_datasets_models <- function(datasets_list, cvd_score_names, alpha_gri
   results_list <- list(); counter <- 1; n_models <- length(datasets_list) * length(cvd_score_names)
   incremental_dir <- save_output("incremental_saves_common")
   dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
-  cat("==========================================================\n")
-  cat("ELASTIC NET (COV-ADJUSTED): COMMON DATASETS x CVD SCORES\n")
+  cat("Elastic Net (cov-adjusted): Common datasets x CVD scores\n")
   cat(sprintf("Models: %d | Perms: %d | Covariates: %s\n", n_models, n_permutations, paste(covariate_cols, collapse = ", ")))
-  cat("==========================================================\n")
   for (dataset_name in names(datasets_list)) {
     df <- datasets_list[[dataset_name]]
     for (cvd_score in cvd_score_names) {
@@ -607,12 +579,10 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
                                                   covariate_cols = COVARIATE_COLS,
                                                   seed = 42, output_file = "elastic_net_score_plus_blocks.qs2") {
   results_list <- list(); counter <- 1; n_models <- length(score_specific_datasets) * length(datasets_list)
-  incremental_dir <- save_output("incremental_saves")
+  incremental_dir <- save_output("incremental_saves_score_plus_blocks")
   dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
-  cat("==========================================================\n")
-  cat("ELASTIC NET (COV-ADJUSTED): SCORE-SPECIFIC + PREDICTOR BLOCK\n")
+  cat("Elastic Net (cov-adjusted): Score-specific + predictor block\n")
   cat(sprintf("Models: %d | Perms: %d | Covariates: %s\n", n_models, n_permutations, paste(covariate_cols, collapse = ", ")))
-  cat("==========================================================\n")
   for (cvd_score in names(score_specific_datasets)) {
     for (block_name in names(datasets_list)) {
       dataset_name <- paste0(cvd_score, "_specific+", block_name)
@@ -636,13 +606,13 @@ run_score_specific_plus_blocks_models <- function(score_specific_datasets, datas
 }
 
 # ============================================
-# 8. EXECUTE PIPELINE
+# 8. Execute pipeline
 # ============================================
 
 results_score_specific <- run_score_specific_models(
   score_specific_datasets = score_specific_datasets,
   alpha_grid = seq(0, 1, by = 0.1),
-  nfolds = 5, n_permutations = 0, seed = 42,
+  nfolds = 5, n_permutations = 0, seed = 42, # set to 1000 for thesis run
   output_file = "elastic_net_score_specific_5fold.qs2"
 )
 
@@ -650,7 +620,7 @@ results_common <- run_common_datasets_models(
   datasets_list = datasets_list,
   cvd_score_names = CVD_scores,
   alpha_grid = seq(0, 1, by = 0.1),
-  nfolds = 5, n_permutations = 1000, seed = 42,
+  nfolds = 5, n_permutations = 0, seed = 42, # set to 1000 for thesis run
   covariate_cols = COVARIATE_COLS,
   output_file = "elastic_net_common_5fold.qs2"
 )
@@ -659,49 +629,9 @@ results_score_plus_blocks <- run_score_specific_plus_blocks_models(
   score_specific_datasets = score_specific_datasets,
   datasets_list = datasets_list,
   alpha_grid = seq(0, 1, by = 0.1),
-  nfolds = 5, n_permutations = 0, seed = 42,
+  nfolds = 5, n_permutations = 0, seed = 42, # set to 1000 for thesis run
   output_file = "elastic_net_score_plus_blocks_5fold.qs2"
 )
-
-# # Body Composition + Height/Weight
-# results_body_comp_extended <- list()
-# for (i in seq_along(scores_without_ht_wt)) {
-#   score <- scores_without_ht_wt[i]
-#   cat(sprintf("\n[%d/3] %s ~ body_comp_with_ht_wt\n", i, score))
-#   df_model <- df_body_comp_extended %>% filter(!is.na(.data[[score]]))
-#   tryCatch({
-#     results_body_comp_extended[[i]] <- run_elastic_net_model(
-#       df_raw = df_model, outcome_col = score, cvd_score_name = score,
-#       dataset_name = "body_comp_with_ht_wt", covariate_cols = COVARIATE_COLS_COMMON,
-#       alpha_grid = seq(0, 1, by = 0.1), nfolds = 5, n_permutations = 0, seed = 42)
-#     cat("  ✓ Success\n")
-#   }, error = function(e) cat(sprintf("  ✗ ERROR: %s\n", e$message)))
-# }
-# results_body_comp_extended_df <- bind_rows(results_body_comp_extended)
-# qs_save(results_body_comp_extended_df, save_output("elastic_net_body_comp_extended_5fold.qs2"))
-# 
-# # Score-specific + body comp with height/weight
-# results_score_plus_body_extended <- list()
-# for (i in seq_along(scores_without_ht_wt)) {
-#   score <- scores_without_ht_wt[i]
-#   dataset_name <- paste0(score, "_specific+body_comp_with_ht_wt")
-#   cat(sprintf("\n[%d/3] %s ~ %s\n", i, score, dataset_name))
-#   base_df <- score_specific_datasets[[score]]
-#   body_comp_predictors <- df_body_comp_extended %>%
-#     select(-all_of(CVD_scores), -any_of(COVARIATE_COLS_COMMON))
-#   df_combined <- base_df %>%
-#     left_join(body_comp_predictors, by = "Sample_ID") %>%
-#     filter(!is.na(.data[[score]]))
-#   tryCatch({
-#     results_score_plus_body_extended[[i]] <- run_elastic_net_model(
-#       df_raw = df_combined, outcome_col = score, cvd_score_name = score,
-#       dataset_name = dataset_name,
-#       alpha_grid = seq(0, 1, by = 0.1), nfolds = 5, n_permutations = 0, seed = 42)
-#     cat("  ✓ Success\n")
-#   }, error = function(e) cat(sprintf("  ✗ ERROR: %s\n", e$message)))
-# }
-# results_score_plus_body_extended_df <- bind_rows(results_score_plus_body_extended)
-# qs_save(results_score_plus_body_extended_df, save_output("elastic_net_score_plus_body_extended_5fold.qs2"))
 
 # Combine all results
 results_all <- bind_rows(
@@ -709,7 +639,7 @@ results_all <- bind_rows(
 )
 
 # ============================================
-# 9. EXPORT TO EXCEL
+# 9. Export to excel
 # ============================================
 
 results_main <- results_all %>%
@@ -720,7 +650,7 @@ results_main <- results_all %>%
     alpha_selection_method, alpha_optimal_fulldata, alpha_mean_nested,
     lambda_min, lambda_1se, lambda_selection_method,
     R2_Y, R2_fold_mean, R2_fold_sd, in_sample_rmse, in_sample_mae, in_sample_cor,
-    Q2_Y, Q2_fold_mean, Q2_fold_sd, Q2_fold_summary,
+    Q2_Y, Q2_fold_mean, Q2_fold_sd,
     Q2_Y_rmse, Q2_Y_mae, Q2_Y_cor,
     Q2_R2_ratio, R2_Q2_gap,
     permutation_p_value, permutation_n, permutation_null_mean_Q2,
@@ -799,7 +729,7 @@ saveWorkbook(wb, save_output("elastic_net_results_cov_adjusted.xlsx"), overwrite
 cat("\n✓ Excel saved: elastic_net_results_cov_adjusted.xlsx\n")
 
 # ============================================
-# 10. PUBLICATION TABLES
+# 10. Creates Tables
 # ============================================
 
 cvd_score_order <- c("ascvd_10y", "frs_10y", "QRISK3_risk", "SCORE2_score")
@@ -809,8 +739,7 @@ dataset_labels_table <- c(
   "all_data" = "Full predictor set", "body_composition" = "Body composition",
   "sociodemographics_lifestyle" = "Sociodemographics & lifestyle",
   "clinical_risk_factors" = "Clinical Measurements & Supplementary Biomarkers",
-  "lipids" = "Lipids", "fatty_acids" = "Fatty acids", "urine_nmr" = "Urine NMR",
-  "body_comp_with_ht_wt" = "Body composition + Ht/Wt")
+  "lipids" = "Lipids", "fatty_acids" = "Fatty acids", "urine_nmr" = "Urine NMR")
 
 create_score_specific_table <- function(results_df, table_title) {
   table_data <- results_df %>%
@@ -907,10 +836,9 @@ doc <- read_docx() %>%
   body_add_par("") %>% body_add_flextable(value = table1) %>% body_add_break() %>%
   body_add_flextable(value = table2) %>% body_add_break() %>% body_add_flextable(value = table3)
 print(doc, target = save_output("Elastic_Net_All_Tables_CovAdj.docx"))
-cat("\n✓ All tables saved\n")
 
 # ============================================
-# 11. GROUPED-BY-SCORE PERFORMANCE PLOT
+# 11. Plot for model performance comparison
 # ============================================
 
 block_order <- c("lipids", "fatty_acids", "urine_nmr", "body_composition", "clinical_risk_factors", "sociodemographics_lifestyle")
@@ -975,13 +903,13 @@ p_mae_vertical <- plot_data_grouped %>%
 
 combined_vertical_plot <- (p_q2_vertical | p_mae_vertical) +
   plot_layout(guides = "collect") & theme(legend.position = "bottom", legend.justification = "center")
-print(combined_vertical_plot)
+
 ggsave(save_output("elastic_net_grouped_by_score_vertical.png"), plot = combined_vertical_plot, width = 14, height = 7, dpi = 300, bg = "white")
 ggsave(save_output("elastic_net_grouped_by_score_vertical.pdf"), plot = combined_vertical_plot, width = 14, height = 7, device = "pdf")
 cat("\n✓ Vertical grouped-by-score plots saved\n")
 
 # ============================================
-# 12. TUNING DIAGNOSTIC PLOTS
+# 12. Tuning diagnostics plots
 # ============================================
 
 extract_tuning_from_results <- function(results_row, dataset_display_name = NULL) {
@@ -1052,41 +980,14 @@ assemble_tuning_figure <- function(tuning_results, add_title = TRUE) {
   lambda_panels[[1]] <- lambda_panels[[1]] + labs(tag = "B") + theme(plot.tag = element_text(face = "bold", family = "Arial", size = 14))
   combined <- wrap_plots(alpha_panels, nrow = 1) / wrap_plots(lambda_panels, nrow = 1)
   if (add_title) combined <- combined + plot_annotation(
-    title = "Elastic Net Hyperparameter Tuning: QRISK3",
+    title = "Elastic Net Hyperparameter Tuning",
     theme = theme(plot.title = element_text(face = "bold", family = "Arial", size = 14),
                   plot.subtitle = element_text(family = "Arial", size = 10, colour = "grey40")))
   combined
 }
 
-# Extract and plot
-qrisk3_score_specific <- results_score_specific %>% filter(cvd_score == "QRISK3_risk")
-qrisk3_common <- results_common %>% filter(cvd_score == "QRISK3_risk")
-tuning_configs <- list(
-  list(row = qrisk3_score_specific, name = "Score-Specific"),
-  list(row = qrisk3_common %>% filter(dataset_name == "all_data"), name = "Multi-Domain Predictor Set"),
-  list(row = qrisk3_common %>% filter(dataset_name == "body_composition"), name = "Body Composition"),
-  list(row = qrisk3_common %>% filter(dataset_name == "sociodemographics_lifestyle"), name = "Sociodemographics"),
-  list(row = qrisk3_common %>% filter(dataset_name == "clinical_risk_factors"), name = "Clinical Risk Factors"),
-  list(row = qrisk3_common %>% filter(dataset_name == "lipids"), name = "Lipids"),
-  list(row = qrisk3_common %>% filter(dataset_name == "fatty_acids"), name = "Fatty Acids"),
-  list(row = qrisk3_common %>% filter(dataset_name == "urine_nmr"), name = "Urine NMR"))
-tuning_results_all <- lapply(tuning_configs, function(cfg) {
-  cat(sprintf("Extracting tuning data for QRISK3 ~ %s...\n", cfg$name))
-  extract_tuning_from_results(cfg$row, dataset_display_name = cfg$name)
-})
 
-plot_all <- assemble_tuning_figure(tuning_results_all, add_title = TRUE)
-ggsave(save_output("tuning_diagnostics_QRISK3_all_2.png"), plot = plot_all, width = 24, height = 9, dpi = 300)
-ggsave(save_output("tuning_diagnostics_QRISK3_all_2.pdf"), plot = plot_all, width = 24, height = 9, dpi = 300, device = cairo_pdf)
-
-thesis_indices <- c(1, 2, 3, 4, 6)
-plot_thesis <- assemble_tuning_figure(tuning_results_all[thesis_indices], add_title = FALSE)
-ggsave(save_output("tuning_diagnostics_QRISK3_thesis_2.png"), plot = plot_thesis, width = 16, height = 7, dpi = 300)
-ggsave(save_output("tuning_diagnostics_QRISK3_thesis_2.pdf"), plot = plot_thesis, width = 16, height = 7, dpi = 300, device = cairo_pdf)
-cat("✓ Tuning diagnostic plots saved\n")
-
-
-# CREATE ALL PLOTS FOR SUPPLEMENTARY
+# create plots for supplementary
 for (score in c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")) {
   
   score_label <- cvd_score_labels[score]
@@ -1114,17 +1015,17 @@ for (score in c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")) {
     theme = theme(plot.title = element_text(face = "bold", family = "Arial", size = 14),
                   plot.subtitle = element_text(family = "Arial", size = 10, colour = "grey40")))
   
-  ggsave(save_output(paste0("tuning_diagnostics_2", score, "_all.png")),
+  ggsave(save_output(paste0("tuning_diagnostics_", score, "_all.png")),
          plot = p, width = 24, height = 9, dpi = 300, bg = "white")
-  ggsave(save_output(paste0("tuning_diagnostics_2", score, "_all.pdf")),
+  ggsave(save_output(paste0("tuning_diagnostics_", score, "_all.pdf")),
          plot = p, width = 24, height = 9, dpi = 300, device = cairo_pdf)
   
   cat("Saved tuning plot for", score_label, "\n")
 }
 
 
-### tuning plot table for supplementary ###
-tuning_table <- all_ela_results %>%
+### tuning plot table for supplementary
+tuning_table <- results_all %>%
   mutate(
     score_label = cvd_score_labels[as.character(cvd_score)],
     dataset_label = case_when(
@@ -1173,12 +1074,10 @@ ft <- flextable(tuning_table) %>%
 
 doc <- read_docx() %>% body_add_flextable(value = ft)
 print(doc, target = save_output("Supplementary_Table_Tuning_Parameters.docx"))
-cat("Saved Supplementary_Table_Tuning_Parameters.docx\n")
-
 
 
 # ============================================
-# 13. PERMUTATION FEATURE IMPORTANCE (PARALLELIZED, COV-ADJUSTED)
+# 13. Permutation feature importance
 # ============================================
 
 calculate_single_feature_importance <- function(feat, X_test, y_test,
@@ -1264,7 +1163,7 @@ run_permutation_importance <- function(df_raw, outcome_col, exclude_cols, featur
     }
     if (valid_count == 0) { cat("Model fitting failed\n"); next }
     valid_alphas <- sapply(cv_results_imp, function(x) x$alpha)
-    alpha_sel <- select_best_alpha(cv_results_imp, valid_alphas, nfolds)
+    alpha_sel <- select_best_alpha(cv_results_imp, valid_alphas)
     best_cv_fit <- cv_results_imp[[alpha_sel$best_idx]]$cv_fit
     available_features <- colnames(X_test)
     features_this_fold <- features_to_test[features_to_test %in% available_features]
@@ -1303,10 +1202,7 @@ run_permutation_importance_batch <- function(results_df, datasets_list, score_sp
   n_models <- nrow(models_to_run)
   incremental_dir <- save_output("incremental_saves_importance")
   dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
-  cat("==========================================================\n")
-  cat("PERMUTATION FEATURE IMPORTANCE (COV-ADJUSTED, PARALLELIZED)\n")
   cat(sprintf("Models: %d | Perms/feature/fold: %d | Folds: %d | Cores: %d\n", n_models, n_permutations, nfolds, n_cores))
-  cat("==========================================================\n")
   all_results <- list()
   for (i in 1:n_models) {
     cvd_score <- models_to_run$cvd_score[i]; dataset_name <- models_to_run$dataset_name[i]
@@ -1356,7 +1252,7 @@ extract_coefficient_directions <- function(results_df) {
 }
 
 # ============================================
-# 14. EXECUTE PERMUTATION IMPORTANCE: SCORE+BLOCK MODELS
+# 14. Execute permutation importance: Score-specific+ predictor block models
 # ============================================
 
 models_for_full_run <- results_score_plus_blocks %>% select(cvd_score, dataset_name) %>% distinct()
@@ -1381,7 +1277,7 @@ write.xlsx(importance_results_full$aggregated %>%
 coefficient_directions_full <- extract_coefficient_directions(results_score_plus_blocks)
 
 # ============================================
-# 15. EXECUTE PERMUTATION IMPORTANCE: COMMON (BLOCK-ONLY) MODELS
+# 15. Execute permutation importance: common (predictor blocks only) models
 # ============================================
 
 models_common_run <- results_common %>% select(cvd_score, dataset_name) %>% distinct()
@@ -1406,9 +1302,8 @@ write.xlsx(importance_results_common$aggregated %>%
 coefficient_directions_common <- extract_coefficient_directions(results_common)
 
 # ============================================
-# 16. THESIS FIGURES: COMBINED IMPORTANCE PLOTS (v2)
+# 16. Feature importance thesis figures
 # ============================================
-
 extract_per_fold_data <- function(importance_results) {
   all_fold_data <- list()
   for (i in seq_along(importance_results$all_results)) {
@@ -1420,19 +1315,6 @@ extract_per_fold_data <- function(importance_results) {
     all_fold_data[[i]] <- fold_df
   }
   bind_rows(all_fold_data)
-}
-
-get_sociodemographic_references <- function() {
-  c("Living Status" = "ref: Living alone", "Employment Status" = "ref: Not working/Other",
-    "Education Level" = "ref: Level 0 (lowest)", "Marital status" = "ref: Married/In partnership",
-    "Working time" = "ref: Full time", "Annual net salary" = "ref: Category 0 (lowest)",
-    "Naps during day" = "ref: No", "Servings nuts per week" = "ref: < 3",
-    "Wine per week" = "ref: < 7 glasses", "Olive oil given day" = "ref: < 4 tbsp",
-    "Olive oil as main culinary fat" = "ref: No")
-}
-
-smart_truncate <- function(x, max_len = 30) {
-  ifelse(nchar(x) > max_len, paste0(substr(x, 1, 12), "..", substr(x, nchar(x) - 12, nchar(x))), x)
 }
 
 feature_display_names <- c(
@@ -1603,12 +1485,10 @@ assemble_combined_figure <- function(panel_a, panels_b, ylim_a, ylim_b, score_co
   invisible(combined)
 }
 
-# ============================================
-# 17. CREATE FIGURE 1: COMMON PREDICTORS
-# ============================================
 
+### Create figure 1: predictor blocks only
 create_combined_figure_common <- function(importance_results, coefficient_directions,
-                                          output_file = "combined_importance_common_v2.pdf") {
+                                          output_file = "combined_importance_common.pdf") {
   score_colours <- c("ASCVD" = "#F8766D", "Framingham" = "#7CAE00", "QRISK3" = "#00BFC4", "SCORE2" = "#C77CFF")
   cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
   fold_data <- extract_per_fold_data(importance_results); aggregated_df <- importance_results$aggregated
@@ -1627,12 +1507,10 @@ create_combined_figure_common <- function(importance_results, coefficient_direct
   assemble_combined_figure(panel_a, panels_b, ylim_a = c(-0.4, 0.4), ylim_b = c(-0.6, 0.4), score_colours, cvd_order, output_file, fig_height = 12)
 }
 
-# ============================================
-# 18. CREATE FIGURE 2: SCORE-SPECIFIC + BLOCK
-# ============================================
 
+### Create figure 2: score-specific + all predictor blocks
 create_combined_figure_score_plus_block <- function(importance_results, coefficient_directions,
-                                                    output_file = "combined_importance_score_plus_block_v2.pdf") {
+                                                    output_file = "combined_importance_score_plus_block.pdf") {
   score_colours <- c("ASCVD" = "#F8766D", "Framingham" = "#7CAE00", "QRISK3" = "#00BFC4", "SCORE2" = "#C77CFF")
   cvd_order <- c("QRISK3", "SCORE2", "Framingham", "ASCVD")
   score_specific_stems <- c("Sex", "Age", "EthnicityCodeQRISK3", "SmokingStatusQRISK3", "diabetes2", "Diabetes",
@@ -1661,30 +1539,19 @@ create_combined_figure_score_plus_block <- function(importance_results, coeffici
   assemble_combined_figure(panel_a, panels_b, ylim_a = ylim_a, ylim_b = c(-0.25, 0.25), score_colours, cvd_order, output_file, fig_height = 12)
 }
 
-# ============================================
-# 19. RUN BOTH FIGURES
-# ============================================
 
-cat("\n=== Figure 1: Common predictors ===\n")
+### Run both figures
 fig_common <- create_combined_figure_common(
   importance_results = importance_results_common,
   coefficient_directions = coefficient_directions_common,
-  output_file = "combined_importance_common_v3.png")
+  output_file = "combined_importance_common.png")
 
-cat("\n=== Figure 2: Score-specific + block ===\n")
 fig_spb <- create_combined_figure_score_plus_block(
   importance_results = importance_results_full,
   coefficient_directions = coefficient_directions_full,
-  output_file = "combined_importance_score_plus_block_v3.png")
+  output_file = "combined_importance_score_plus_block.png")
 
-# ============================================
-# FINAL SAVE
-# ============================================
 
+### final save
 qs_save(results_all, save_output("elastic_net_all_results.qs2"))
 saveRDS(results_all, save_output("elastic_net_all_results.rds"))
-
-cat("\n==========================================================\n")
-cat(sprintf("ALL OUTPUT FILES SAVED TO: %s\n", OUTPUT_DIR))
-cat(sprintf("Covariates (unpenalized): %s\n", paste(COVARIATE_COLS, collapse = ", ")))
-cat("==========================================================\n")
