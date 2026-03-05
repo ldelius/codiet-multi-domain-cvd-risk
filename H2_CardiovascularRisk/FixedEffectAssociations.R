@@ -1,23 +1,27 @@
-### Cardiovascular Risk Scores and Predictor Associations: 
-### Generalised Linear Models with Fixed Effects
+################################################################################
+### Cardiovascular Risk Scores and Predictor Associations with
+### Generalised Linear Models with Fixed Effects (statin, supplements, study site)
 ### Author: Luisa Delius
+################################################################################
 
-# ─── Packages ─────────────────────────────────────────────────────────────────
+# ============================================
+# Set everything up
+# ============================================
 library(tidyverse)
 library(broom)
 library(patchwork)
 library(flextable)
 library(DHARMa)
 library(readxl)
-library(ggplot2)
-
 
 set.seed(42)
 
-# ─── 1. Load Data ─────────────────────────────────────────────────────────────
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files/processed_data"
 setwd(wkdir)
 
+# ============================================
+# 1. Load data
+# ============================================
 df_fatty_acids_predictors <- readRDS("df_fatty_acids_predictor_statin_suppl.rds") %>% arrange(Sample_ID)
 df_lipidomics_predictors  <- readRDS("df_lipidomics_predictor_statin_suppl.rds") %>% arrange(Sample_ID)
 df_REDcap_demographics    <- readRDS("df_REDcap_demographics_predictor.rds") %>% arrange(Sample_ID)
@@ -26,7 +30,7 @@ df_urine_nmr_data         <- readRDS("df_urine_NMR_data.rds") %>% arrange(Sample
 df_risk_factors <- readRDS("df_risk_factor_predictors.rds") %>%
   select(-Age.Risk, -stress_resilience_status, -stress_index_status, -Heart.Rate,
          -z_Heart.Rate, -z_Age, -z_Total.Cholesterol.mg.dl, -z_HDL.mg.dl,
-         -z_Body.Weight, -z_Height, -z_BMI) %>%
+         -z_Body.Weight, -z_Height, -z_BMI) %>% # dropping columns used for CVD score calculation
   arrange(Sample_ID)
 
 df_all_cvd_risk_scores <- readRDS("df_all_risk_scores.rds") %>%
@@ -39,14 +43,16 @@ df_body_composition <- readRDS("df_body_composition_metrics.rds") %>%
   full_join(df_risk_factors %>% select(z_Body.fat, z_Fat.free.mass, Sample_ID), by = "Sample_ID")
 
 df_hypertension_treatment <- read_excel("../QRISK3_data.xlsx", sheet = "bp_medication") %>%
-  mutate(Sample_ID = str_replace_all(Sample_ID, "-", "_"))
+  mutate(Sample_ID = str_replace_all(Sample_ID, "-", "_")) # used for paradox association analyses
 
 df_qrisk3_input <- readRDS("QRISK3_calculation_input.rds") %>%
   rename(Sample_ID = PatientID) %>%
   arrange(Sample_ID) %>%
   mutate(z_systolic = as.numeric(scale(systolic)))
 
-# ─── 2. Prepare Merged DataFrames for GLM ────────────────────────────────────
+# ============================================
+# 2. Prepare Merged Data frames for GLM
+# ============================================
 df_fixed_effects <- df_risk_factors %>%
   select(Sample_ID, Gender, Country) %>%
   full_join(df_lipidomics_predictors %>% select(Sample_ID, Statins, Supplements), by = "Sample_ID")
@@ -75,7 +81,9 @@ df_cvd_and_urine_nmr <- df_all_cvd_risk_scores %>%
   full_join(df_urine_nmr_data, by = "Sample_ID") %>%
   full_join(df_fixed_effects, by = "Sample_ID")
 
-# ─── 3. Define Predictors and Outcomes ────────────────────────────────────────
+# ============================================
+# 3. Define predictors and outcomes
+# ============================================
 lipid_predictors        <- names(select(df_lipidomics_predictors, starts_with("z_")))
 fatty_acid_predictors   <- names(select(df_fatty_acids_predictors, starts_with("z_")))
 REDcap_numeric_preds    <- names(select(df_REDcap_demographics, starts_with("z_")))
@@ -88,7 +96,9 @@ outcomes <- c("QRISK3_risk", "SCORE2_score", "ascvd_10y", "frs_10y")
 
 fixed_effects <- c("Statins", "Supplements", "Gender", "Country")
 
-# ─── 4. GLM Functions ────────────────────────────────────────────────────────
+# ============================================
+# 4. GLM Functions
+# ============================================
 # 4.1 GLM for numeric (continuous) predictors
 run_glm_num <- function(data, outcomes, num_predictors, fixed_effects) {
   fixed_part <- paste(fixed_effects, collapse = " + ")
@@ -116,7 +126,7 @@ run_glm_num <- function(data, outcomes, num_predictors, fixed_effects) {
   })
 }
 
-# 4.2 GLM for factor (categorical) predictors
+# 4.2 GLM for factor predictors
 run_glm_fac <- function(data, outcomes, factor_predictors, fixed_effects) {
   fixed_part <- paste(fixed_effects, collapse = " + ")
   
@@ -147,7 +157,9 @@ run_glm_fac <- function(data, outcomes, factor_predictors, fixed_effects) {
   })
 }
 
-# ─── 5. Run GLMs ─────────────────────────────────────────────────────────────
+# ============================================
+# 5. Run GLMs
+# ============================================
 glm_lipid_num     <- run_glm_num(df_cvd_and_lipidomics, outcomes, lipid_predictors, fixed_effects)
 glm_fatty_num     <- run_glm_num(df_cvd_and_fatty_acids, outcomes, fatty_acid_predictors, fixed_effects)
 glm_urine_num     <- run_glm_num(df_cvd_and_urine_nmr, outcomes, urine_nmr_predictors, fixed_effects)
@@ -168,7 +180,9 @@ saveRDS(glm_risk_num,      file.path(incremental_dir, "glm_risk_num.rds"))
 saveRDS(glm_body_comp_num, file.path(incremental_dir, "glm_body_comp_num.rds"))
 saveRDS(glm_REDcap_fac,    file.path(incremental_dir, "glm_REDcap_fac.rds"))
 
-# ─── 6. Combine Results and Apply Multiple Testing Correction ────────────────
+# ============================================
+# 6. Combine Results and apply multiple testing correction
+# ============================================
 all_results_glm <- bind_rows(
   glm_lipid_num     %>% mutate(predictor_set = "Lipids", comparison = NA_character_),
   glm_fatty_num     %>% mutate(predictor_set = "Fatty acids", comparison = NA_character_),
@@ -189,7 +203,9 @@ cat("Significant (BH-adjusted p < 0.05):", sum(all_results_glm$significant == "S
 
 saveRDS(all_results_glm, file.path(incremental_dir, "all_results_glm_combined.rds"))
 
-# ─── 7. Display Helpers ──────────────────────────────────────────────────────
+# ============================================
+# 7. Renaming functions
+# ============================================
 rename_predictors <- function(term_plot) {
   case_when(
     term_plot == "z_ecw_tbw"                      ~ "Extracellular water / Total body water",
@@ -237,9 +253,10 @@ rename_predictor_sets <- function(predictor_set) {
   )
 }
 
-# ─── 8.0 Combined Figure: FDR-Significant and Nominal significant Heatmap ────
-# ── Data Preparation ─────────────────────────────────────────────────────────
-
+# ============================================
+# 8 Combined Figure: FDR-Significant and Nominal significant Heatmap
+# ============================================
+# Data Preparation
 heatmap_data <- all_results_glm %>%
   filter(!is.na(estimate)) %>%
   mutate(
@@ -276,8 +293,7 @@ panel_a_cat  <- heatmap_data %>% filter(term_plot_clean %in% fdr_sig_terms, is_c
 panel_a_cont <- heatmap_data %>% filter(term_plot_clean %in% fdr_sig_terms, !is_categorical)
 panel_b_cont <- heatmap_exploratory %>% filter(term_plot_clean %in% preds_3plus, !is_categorical)
 
-# ── Ordering ─────────────────────────────────────────────────────────────────
-
+# Ordering
 order_a_cat <- panel_a_cat %>%
   filter(is_fdr_sig) %>%
   group_by(term_plot_clean) %>%
@@ -298,14 +314,13 @@ order_b_cont <- panel_b_cont %>%
   arrange(predictor_set, desc(mean_effect)) %>%
   pull(term_plot_clean)
 
-# ── Shared Colour Scale Limits ───────────────────────────────────────────────
+# Shared Colour Scale Limits
 
 all_continuous <- bind_rows(panel_a_cont, panel_b_cont)
 max_abs_cont <- max(abs(all_continuous$log_effect), na.rm = TRUE)
 max_abs_cat  <- max(abs(panel_a_cat$log_effect), na.rm = TRUE)
 
-# ── Shared Theme ─────────────────────────────────────────────────────────────
-
+# Shared Theme
 # Small, consistent legend styling
 legend_theme <- theme(
   legend.position    = "right",
@@ -343,8 +358,7 @@ fill_categorical <- scale_fill_gradient2(
   labels = function(x) sprintf("%.2f", x)
 )
 
-# ── Title labels ─────────────────────────────────────────────────────────────
-
+# Title labels
 title_a <- wrap_elements(
   full = grid::textGrob(
     label = expression(bold("A) Significant Associations After Multiple Testing Correction (") * bold(italic(p)[adj]) * bold(" < 0.05, *)")),
@@ -361,8 +375,7 @@ title_b <- wrap_elements(
   )
 )
 
-# ── Panel A: Categorical ────────────────────────────────────────────────────
-
+# Panel A: Categorical 
 p_a_cat <- ggplot(panel_a_cat,
                   aes(x = outcome,
                       y = factor(term_plot_clean, levels = rev(order_a_cat)),
@@ -380,8 +393,7 @@ p_a_cat <- ggplot(panel_a_cat,
     plot.margin  = margin(2, 5, 0, 5)
   )
 
-# ── Panel A: Continuous ─────────────────────────────────────────────────────
-
+# Panel A: Continuous
 p_a_cont <- ggplot(panel_a_cont,
                    aes(x = outcome,
                        y = factor(term_plot_clean, levels = rev(order_a_cont)),
@@ -399,8 +411,7 @@ p_a_cont <- ggplot(panel_a_cont,
     plot.margin  = margin(0, 5, 2, 5)
   )
 
-# ── Panel B: Continuous (exploratory) ────────────────────────────────────────
-
+# Panel B: Continuous (exploratory) 
 p_b_cont <- ggplot(panel_b_cont,
                    aes(x = outcome,
                        y = factor(term_plot_clean, levels = rev(order_b_cont)),
@@ -418,8 +429,7 @@ p_b_cont <- ggplot(panel_b_cont,
     plot.margin  = margin(2, 5, 5, 5)
   )
 
-# ── Stack everything ─────────────────────────────────────────────────────────
-
+# Stack everything 
 n_a_cat  <- length(unique(panel_a_cat$term_plot_clean))
 n_a_cont <- length(unique(panel_a_cont$term_plot_clean))
 n_b_cont <- length(unique(panel_b_cont$term_plot_clean))
@@ -430,8 +440,7 @@ combined_final <- title_a / p_a_cont / p_a_cat / title_b / p_b_cont +
   )
   
 
-# ── Save ─────────────────────────────────────────────────────────────────────
-
+# Save 
 total_rows <- n_a_cat + n_a_cont + n_b_cont
 plot_height <- total_rows * 0.45 + 5
 
@@ -439,13 +448,10 @@ ggsave("combined_glm_heatmap.png", combined_final,
        width = 13, height = plot_height, dpi = 300)
 
 cat("Saved combined_glm_heatmap.png\n")
-cat(sprintf("Panel A: %d categorical + %d continuous predictors\n", n_a_cat, n_a_cont))
-cat(sprintf("Panel B: %d continuous predictors\n", n_b_cont))
-cat(sprintf("Plot dimensions: 13 x %.1f inches\n", plot_height))
 
-
-# ── 9. Save individual plots (reusing sub-plots from combined figure) ───────────
-
+# ============================================
+# 9. Save individual plots
+# ============================================
 # Individual FDR-significant plot
 individual_fdr <- title_a / p_a_cont / p_a_cat +
   plot_layout(heights = c(1, n_a_cont, n_a_cat)) +
@@ -476,7 +482,9 @@ individual_exp <- title_b / p_b_cont +
 ggsave("exploratory_heatmap_3plus_scores_split.png", individual_exp,
        width = 12, height = n_b_cont * 0.4 + 3, dpi = 300)
 
-# ─── 10. Supplementary Tables ────────────────────────────────────────────────
+# ============================================
+# 10. Supplementary tables
+# ============================================
 create_wide_supp_table <- function(data, predictor_set_name) {
   df_wide <- data %>%
     filter(predictor_set == predictor_set_name) %>%
@@ -538,11 +546,11 @@ save_as_docx(
 )
 
 
-################################################################################
-# MODEL DIAGNOSTICS: Deviance and DHARMa Tests
-################################################################################
+# ============================================
+# 11. model diagnostics: Deviance and DHARMa Tests
+# ============================================
 
-# ─── 11. Deviance Statistics ─────────────────────────────────────────────────
+# 11.1 Deviance Statistics
 calc_deviance_stats <- function(model, predictor, outcome, n) {
   tibble(
     predictor = predictor,
@@ -579,8 +587,7 @@ run_deviance <- function(data, predictors, fixed_effects, outcomes, predictor_se
 }
 
 
-
-# ─── 11b. Deviance for Factor Predictors ─────────────────────────────────────
+# Deviance for Factor Predictors
 run_deviance_fac <- function(data, predictors, fixed_effects, outcomes, predictor_set_label) {
   fixed_part <- paste(fixed_effects, collapse = " + ")
   
@@ -625,9 +632,7 @@ cat("\nDeviance Summary by Outcome:\n")
 print(deviance_summary)
 
 
-
-
-# ─── 12. DHARMa Diagnostics ─────────────────────────────────────────────────
+# 11.2 DHARMa Diagnostics 
 dharma_results <- map_dfr(outcomes, function(outcome) {
   pred_name <- risk_factor_predictors[1]
   
@@ -656,7 +661,7 @@ dharma_results <- map_dfr(outcomes, function(outcome) {
 cat("\nDHARMa Diagnostics by Outcome:\n")
 print(dharma_results)
 
-# ─── 13. Combined Diagnostics Summary ────────────────────────────────────────
+# Combined Diagnostics Summary
 diagnostics_summary <- deviance_summary %>%
   left_join(
     dharma_results %>% select(outcome, uniformity_p, dispersion_stat, dispersion_p, outlier_p),
@@ -680,12 +685,12 @@ saveRDS(dharma_results,       file.path(incremental_dir, "dharma_results.rds"))
 saveRDS(diagnostics_summary,  file.path(incremental_dir, "diagnostics_summary.rds"))
 
 
-################################################################################
-# SENSITIVITY ANALYSES
-################################################################################
+# ============================================
+# 12. Investigation paradox associations
+# ============================================
 
-# ─── 14. Build Master Dataframe for Sensitivity Analyses ─────────────────────
-# Reload df_risk_factors without the column exclusions (need z_Age etc.)
+#  Build Master Data frame for Sensitivity Analyses 
+# Reload df_risk_factors without the column exclusions
 df_risk_factors_full <- readRDS("df_risk_factor_predictors.rds") %>% arrange(Sample_ID)
 
 df_master <- df_all_cvd_risk_scores %>%
@@ -703,7 +708,7 @@ df_master <- df_all_cvd_risk_scores %>%
 
 base_fixed <- c("Statins", "Supplements", "Gender", "Country")
 
-# ─── 15. Sensitivity GLM Function ────────────────────────────────────────────
+# GLM Function with extra covariates for paradox associations 
 run_sensitivity_glm <- function(data, outcomes, base_fixed,
                                 predictor_spec, extra_fixed,
                                 analysis_label) {
@@ -774,9 +779,9 @@ format_sensitivity_table <- function(results) {
            delta_RR_fmt, direction_change)
 }
 
-# ─── 16. Run Sensitivity Analyses ────────────────────────────────────────────
+# Run paradox association Analyses
 
-# A1: Add Age
+# 12.1 Add Age
 sens_hr_age <- run_sensitivity_glm(
   df_master, outcomes, base_fixed,
   list(var = "z_mean_hrt", type = "numeric", term_label = "Mean Heart Rate"),
@@ -797,20 +802,18 @@ sens_retired_age <- run_sensitivity_glm(
 
 results_age <- bind_rows(sens_hr_age, sens_naps_age, sens_retired_age)
 
-cat("\n═══ A1: Effect of adding AGE as fixed effect ═══\n")
 print(format_sensitivity_table(results_age), n = Inf, width = Inf)
 
-# A2: Add BP Medication (Heart Rate only)
+# 12.2 Add BP Medication (Heart Rate only)
 sens_hr_bpmed <- run_sensitivity_glm(
   df_master, outcomes, base_fixed,
   list(var = "z_mean_hrt", type = "numeric", term_label = "Mean Heart Rate"),
   "blood_pressure_treatment", "+ BP Medication"
 )
 
-cat("\n═══ A2: Effect of adding BP MEDICATION ═══\n")
 print(format_sensitivity_table(sens_hr_bpmed), n = Inf, width = Inf)
 
-# A3: Body composition / BP adjustments (Heart Rate)
+# 12.3 Body composition / BP adjustments (Heart Rate)
 body_comp_adjustments <- list(
   list(extra = "z_smi__skeletal_muscle_index_",                       label = "+ Muscle Index"),
   list(extra = "z_svr_skeletal_muscle_mass_visceral_fat_area_ratio_", label = "+ Muscle/Fat Ratio"),
@@ -827,17 +830,15 @@ results_bodycomp_hr <- map_dfr(body_comp_adjustments, function(adj) {
   )
 })
 
-cat("\n═══ A3: Body composition / BP adjustments (Heart Rate) ═══\n")
 print(format_sensitivity_table(results_bodycomp_hr), n = Inf, width = Inf)
 
-# A4: Visceral Fat — Heart Rate AND Trigonelline
+# 12.4 Visceral Fat — Heart Rate AND Trigonelline
 sens_trigonelline_vfat <- run_sensitivity_glm(
   df_master, outcomes, base_fixed,
   list(var = "z_Trigonelline", type = "numeric", term_label = "Trigonelline"),
   "z_vfa__visceral_fat_area_", "+ Visceral Fat"
 )
 
-cat("\n═══ A4: Visceral Fat adjustment — HR and Trigonelline ═══\n")
 print(format_sensitivity_table(
   bind_rows(results_bodycomp_hr %>% filter(analysis == "+ Visceral Fat"), sens_trigonelline_vfat)
 ), n = Inf, width = Inf)
@@ -848,11 +849,11 @@ write_csv(format_sensitivity_table(all_sensitivity), "sensitivity_analysis_resul
 cat("\nSaved: sensitivity_analysis_results.csv\n")
 
 
-################################################################################
-# ASSOCIATION PLOTS
-################################################################################
+# ============================================
+# 13. associations plots
+# ============================================
 
-# ─── 17. Plot Helpers ────────────────────────────────────────────────────────
+# Plot Helpers 
 theme_assoc <- theme_minimal(base_size = 13) +
   theme(
     plot.title = element_text(size = 12, face = "bold"),
@@ -912,7 +913,7 @@ plot_boxplot <- function(data, x_var, y_var, x_label, y_label, title) {
     theme_assoc
 }
 
-# ─── 18. Heart Rate Association Panel (2×4) ──────────────────────────────────
+# Heart Rate Association Panel
 combined_hr <- (
   plot_boxplot(df_master, "blood_pressure_treatment", "mean_hrt",
                "BP Medication", "Mean Heart Rate (bpm)", "Heart Rate vs BP Medication") |
@@ -943,7 +944,7 @@ combined_hr <- (
 
 ggsave("heart_rate_associations_panel.png", combined_hr, width = 18, height = 10, dpi = 300)
 
-# ─── 19. Age vs Naps and Employment ──────────────────────────────────────────
+# Age vs Naps and Employment
 combined_age <- (
   plot_boxplot(df_master, "naps_during_day", "Age",
                "Daytime Naps", "Age (years)", "Age vs Daytime Naps") |
