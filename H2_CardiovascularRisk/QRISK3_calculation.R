@@ -11,7 +11,6 @@ library(QDiabetes)
 
 # Set working directory
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files"
-knitr::opts_knit$set(root.dir = wkdir)
 setwd(wkdir)
 
 # Upload the data/excel sheet
@@ -21,11 +20,6 @@ df_Cholesterol_HDL  <- read_excel("QRISK3_data.xlsx", sheet = "Cholesterol_HDL")
 df_Blood_Pressure     <- read_excel("QRISK3_data.xlsx", sheet = "Blood_Pressure")
 df_age_risk_factor_sheet <- read_excel("QRISK3_data.xlsx", sheet = "Age_risk_factor_sheet")
 df_UK_postcodes <- read_excel(path = "cardiovascular_riskfactor_calculations.xlsx", sheet = "Risk_region")
-
-
-names(df_Cholesterol_HDL) # gives you column titles 
-glimpse(df_Cholesterol_HDL)
-summary(df_Cholesterol_HDL[, c("Total_Cholesterol_mg_dl","HDL_mg_dl")])
 
 
 # Step 1.1: Calculate ratio cholesterol/HDL for each person only once (each patient has 2-3 meassuremnts in the list, so calculating the mean of them)
@@ -45,8 +39,6 @@ lipids_by_patient <- df_Cholesterol_HDL %>%
     .groups = "drop" # removes all grouping (the data got grouped by (group_by() to calculate each patients mean))
   )
 
-head(lipids_by_patient)
-str(lipids_by_patient)
 
 # Step 1.2.: create a df with one age for each person (currently every patient has an age per visit)
 patient_age <- df_age_risk_factor_sheet %>%
@@ -129,7 +121,7 @@ QRISK3 <- data.frame(
                      smoke_cat = qrisk_input$SmokingStatusQRISK3,
                     town = ifelse(is.na(qrisk_input$townsend), 0, qrisk_input$townsend),
                     Sample_ID = qrisk_input$PatientID) %>%
-  mutate(ID = rownames(.)) %>% ## in der QRISK df starten die IDs bei 2, weil ich in der nächsten Zeile die erste Zeile wegen einem NA raugeschmissen habe.
+  mutate(ID = rownames(.)) %>% # Row IDs start at 2 because the first row is dropped due to NA
   filter(!if_any(everything(), is.na)) %>% # cannot have NA values
   filter(age >= 25 & age <= 84) # must be between 25 and 84
 
@@ -151,7 +143,7 @@ QRISK3_sample_ID <- QRISK3 %>%
   inner_join(QRISK3_test, by = "ID") %>%
   select(Sample_ID, QRISK3_2017) %>%
   rename(QRISK3_risk = QRISK3_2017)
-## prints out the The calculated 10-year cardiovascular risk (%) (to compare, mine is 0.1%)
+## prints out the The calculated 10-year cardiovascular risk (%)
 
 # Save your dataframe with patient IDs and QRISK3 scores
 saveRDS(QRISK3_sample_ID, "QRISK3_sample_ID.RDS")
@@ -170,13 +162,13 @@ ggplot(QRISK3_sample_ID, aes(x = QRISK3_risk)) +
     "| N =", nrow(QRISK3_sample_ID)),
     x = "10-year cardiovascular risk (%)",
     y = "Number of participants"   )+
-  geom_density( # distribution
-    aes(y = ..density.. * nrow(QRISK3_sample_ID) * diff(range(QRISK3_sample_ID$QRISK3_risk)) / 20),
+  geom_density(
+    aes(y = after_stat(density) * nrow(QRISK3_sample_ID) * diff(range(QRISK3_sample_ID$QRISK3_risk)) / 20),
     color = "darkblue",
-    size = 1.2
+    linewidth = 1.2
   ) +
-  geom_vline(aes(xintercept = mean(QRISK3_risk, na.rm = TRUE)), # mean QRISK value
-             color = "red", linetype = "dashed", size = 1
+  geom_vline(aes(xintercept = mean(QRISK3_risk, na.rm = TRUE)),
+             color = "red", linetype = "dashed", linewidth = 1
   )
 
 # Statistics to the QRISK3 distribution
@@ -199,7 +191,7 @@ df_patient_risk <-  df_risk_factors %>%
   ## change categorials to factors to be able to calculate with them
     Country = factor(Country),
     Gender = factor(Gender),
-    Age.Risk = factor(Age.Risk, levels = c("Normal", "I", "II", "III")), ## how to treat NA??
+    Age.Risk = factor(Age.Risk, levels = c("Normal", "I", "II", "III")),
     stress_resilience_status = factor(stress_resilience_status,
                                       levels = c("poor", "Bad", "Normal", "Good", "Excellent"),
                                       ordered = TRUE),
@@ -214,8 +206,6 @@ inconsistent_categoricals <- df_patient_risk %>%
   summarise(across(where(is.factor), n_distinct), .groups = "drop") %>% # how many different values appear for each patient?
   filter(if_any(everything(), ~ .x > 1))
 # I changed the age and gender accordingly after running those lines of code
-
-# sort(unique(df_patient_risk$stress_index_status)) # i had used that line of code to find the level of each column out
 
 
 # Step 2: Create a df with the summarized per patient data, ready to use for further analysis.
@@ -290,7 +280,6 @@ predictors <- df_scaled_patient_risk_for_lm %>%
     where(is.factor)
     ) %>% # selects all columns whose names begin with z_ & factors. Those variables shall be modeled against my selected group.
   names() #creates a simple list of column names
-predictors
 
 # one lm per predictor, dropping NAs only for that predictor + outcome
 lm_output <- map_dfr(predictors, function(var) { # runs the function over each variable and collects them in a df.
@@ -312,7 +301,6 @@ lm_output <- map_dfr(predictors, function(var) { # runs the function over each v
   mutate(p.adj = p.adjust(p.value, method = "BH")) %>% # multiple testing adjustment 
   arrange(p.adj) # arranges by adjusted pvalue
 
-lm_output
 
 summary(lm_output$shapiro_p)
 
@@ -330,7 +318,6 @@ num_predictors <- df_scaled_patient_risk_for_lm %>%
 factor_predictors <- df_scaled_patient_risk_for_lm %>%
   select(where(is.factor)) %>%
   names()
-factor_predictors
 
 # Combined for plotting
 plot_predictors <- c(num_predictors, factor_predictors)
@@ -397,52 +384,6 @@ glm_output <- bind_rows(glm_output_num, glm_output_fac) %>%
     significant = if_else(conf.low > 1 | conf.high < 1,
                           "Significant", "Not significant")
   ) %>%
-  arrange(p.adj)
-
-
-###### -- Running GLMM (Generalised Linear Mixed Model) with Random Effects (Gender & Country)-- #####
-predictors <- df_scaled_patient_risk_for_lm %>%
-  select(
-    starts_with("z_"),
-    where(is.factor)
-  ) %>% # selects all columns whose names begin with z_ & factors. Those variables shall be modeled against my selected group.
-  select(-Gender, -Country) %>%     # do not want to model Gender as fixed effect here
-  names() #creates a simple list of column names
-predictors
-
-glmm_gender_country <- map_dfr(predictors, function(var) {
-  
-  df_pair <- df_scaled_patient_risk_for_lm %>%
-    select(QRISK3_risk, Gender, Country, all_of(var)) %>%
-    drop_na()
-  
-  if (nrow(df_pair) == 0 || n_distinct(df_pair$Country) < 2) {
-    message("Skipping ", var, ": only one Country level in subset after drop_na().")
-    return(tibble())
-  }
-  
-  form <- as.formula(paste("QRISK3_risk ~", var, "+ (1 | Gender) + (1 | Country)")) # fixed effect = predictor, random effect = Gender (&Country)
-  
-  model <- lme4::glmer(
-    form,
-    data   = df_pair,
-    family = Gamma(link = "log")
-  )
-  
-  coef_df <- as.data.frame(summary(model)$coefficients)
-  coef_df$term <- rownames(coef_df)
-  
-  coef_df %>%
-    filter(term != "(Intercept)") %>%
-    mutate(
-      conf.low  = Estimate - 1.96 * `Std. Error`,
-      conf.high = Estimate + 1.96 * `Std. Error`,
-      predictor = var,
-      n         = nrow(df_pair)
-    )
-  
-}) %>%
-  mutate(p.adj = p.adjust(`Pr(>|z|)`, method = "BH")) %>%
   arrange(p.adj)
 
 
@@ -557,39 +498,6 @@ ggplot(
   ) +
   theme(axis.text.y = element_text(size = 7))
 
-###### ---------------- Plotting GLM Random Effect Model (Gender & Country) ---------------- ######
-glmm_plot <- glmm_gender_country %>%
-  mutate(
-    ratio       = exp(Estimate),
-    ci.low      = exp(conf.low),
-    ci.high     = exp(conf.high),
-    significant = if_else(p.adj < 0.05, "Significant", "Not significant")
-  )
-
-ord <- glmm_plot$term[order(glmm_plot$ratio)]
-
-ggplot(glmm_plot %>%
-         filter(term != "Age.RiskIII"),
-       aes(x = ratio,
-           y = factor(term, levels = ord),
-           colour = significant)) +
-  geom_vline(xintercept = 1, linetype = "dashed") +
-  geom_errorbarh(aes(xmin = ci.low, xmax = ci.high), height = 0.2) +
-  geom_point() +
-  scale_colour_manual(values = c("Significant" = "firebrick3",
-                                 "Not significant" = "black")) +
-  labs(
-    x = "Ratio of expected QRISK3 (exp(beta))",
-    y = "Predictor",
-    title   = "GLMM with random intercept for Gender & Country",
-    caption = "Model: QRISK3_risk ~ predictor + (1 | Gender) + (1 | Country)\nBlack = p ≥ 0.05, Red = p < 0.05 (BH correction)\n95% CIs on ratio scale\nn varies by predictor\nSkipping z_Fasted.NEFA.mmol.L and z_Fasted.Insulin.pmol.l as only one Country level in subset after drop_na()."
-  ) +
-  theme(
-    axis.text.y = element_text(size = 6),
-    plot.caption.position = "plot",
-    plot.caption = element_text(hjust = 1, vjust = 1, size = 8)
-  )
-
 
 ### ----- check whether weight and fat free mass correlate ----- ###
 # 1. check distribution to decide for a normality test (using histogram)
@@ -625,11 +533,11 @@ abline(lm(Weight_kg ~ Fat.free.mass, data = df_correlate_fatfreemass_weight), co
 
 
 ###############################################################################
-## BMI Calculation (concidering RACE)
+## BMI Calculation (concidering race)
 ###############################################################################
 df_bmi <- df_patient_risk_for_lm %>%
-  select(PatientID, BMI) %>%
-  full_join(qrisk_input %>% select(PatientID, EthnicityCodeQRISK3), by = "PatientID") %>%
+  select(Sample_ID, BMI) %>%
+  full_join(qrisk_input %>% select(PatientID, EthnicityCodeQRISK3), by = c("Sample_ID" = "PatientID")) %>%
   mutate(
     BMI = as.numeric(BMI),
     EthnicityCodeQRISK3 = as.numeric(EthnicityCodeQRISK3),
