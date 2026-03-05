@@ -1,19 +1,16 @@
 ################################################################################
-# CoDiet CVD Prediction Model Comparison — Nested Cross-Validation
+# ML Model Comparison for CVD risk score prediction
+# Description: Compares six ML algorithms (Elastic Net, Sparse PLS,
+#   Random Forest, XGBoost, SVM-RBF, k-NN) in their ability to predict four
+#   established CVD risk scores (QRISK3, SCORE2, Framingham, ASCVD) using
+#   score-specific inputs and a full multi-domain predictor set.
 # Author: Luisa Delius
-#
-# Architecture:
-#   Outer loop: 5-fold CV x 5 repeats (unbiased performance estimation)
-#   Inner loop: 5-fold CV within each outer training fold (hyperparameter tuning)
-#   Hyperparameter selection: one-SE rule on RMSE
-#   Best model selection: lowest mean outer-fold CV MAE
 ################################################################################
 
 # ============================================
 # 1. Setup
 # ============================================
 
-# ---- 1.1 Load packages ----
 library(tidyverse)
 library(tidymodels)
 library(future)
@@ -24,20 +21,12 @@ library(flextable)
 library(officer)
 library(patchwork)
 
-# ---- 1.2 Global settings ----
 set.seed(42)
-options(scipen = 999, expressions = 500000)
+options(scipen = 999, expressions = 500000) #prevents printing numbers in scientific notations
 
 CPUS <- parallel::detectCores() - 3
-cat("Using", CPUS, "CPU cores for parallel processing\n")
-
-select <- dplyr::select
-slice  <- dplyr::slice
-rename <- dplyr::rename
-filter <- dplyr::filter
 
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files/processed_data"
-knitr::opts_knit$set(root.dir = wkdir)
 setwd(wkdir)
 
 # Create output folder for all results
@@ -78,16 +67,17 @@ df_body_composition <- readRDS("df_body_composition_metrics.rds") %>%
 df_REDcap_demographics <- readRDS("df_REDcap_demographics_ElaNet.rds") %>%
   select(-starts_with("z_"), -QRISK3_risk, -recruitment_site)
 
-df_fatty_acids_statin_suppl <- readRDS("df_fatty_acids_predictor_statin_suppl.rds")
-
 df_risk_factors <- readRDS("df_risk_factor_predictors.rds") %>%
   select(-starts_with("z_"), -QRISK3_risk,
          -Heart.Rate, -Age, -Total.Cholesterol.mg.dl, -HDL.mg.dl,
          -Body.Weight, -Height, -BMI, -Gender,
          -stress_resilience_status, -stress_index_status, -Age.Risk,
          -Body.fat, -Fat.free.mass) %>%
-  full_join(df_fatty_acids_statin_suppl %>% select(Sample_ID, Statins, Supplements),
-            by = "Sample_ID")
+  full_join(
+    readRDS("df_fatty_acids_predictor_statin_suppl.rds") %>%
+      select(Sample_ID, Statins, Supplements),
+    by = "Sample_ID"
+  )
 
 df_risk_factors_raw <- readRDS("df_risk_factor_predictors.rds")
 body_comp_extras <- df_risk_factors_raw %>%
@@ -107,7 +97,7 @@ df_ascvd_frs_score2_input <- readRDS("ASCVD_SCORE2_Framingham_input.rds") %>%
 df_QRISK3_input <- readRDS("QRISK3_calculation_input.rds") %>%
   rename(Sample_ID = PatientID)
 
-CVD_scores <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y", "mean_risk")
+CVD_scores <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
 
 # ---- 2.2 Create predictor block datasets ----
 df_fatty_acids_model <- df_fatty_acids %>%
@@ -167,43 +157,22 @@ df_model0_frs <- df_ascvd_frs_score2_input %>%
   full_join(df_all_cvd_risk_scores %>% select(Sample_ID, frs_10y), by = "Sample_ID") %>%
   filter(!is.na(frs_10y))
 
-df_model0_composite <- df_QRISK3_input %>%
-  mutate(townsend = replace_na(townsend, 0)) %>%
-  full_join(df_ascvd_frs_score2_input %>% select(Sample_ID, Risk.region), by = "Sample_ID") %>%
-  full_join(df_all_cvd_risk_scores %>% select(Sample_ID, mean_risk), by = "Sample_ID") %>%
-  filter(!is.na(mean_risk))
 
 score_specific_datasets <- list(
   QRISK3_risk  = df_model0_QRISK3,
   SCORE2_score = df_model0_score2,
   frs_10y      = df_model0_frs,
-  ascvd_10y    = df_model0_ascvd,
-  mean_risk    = df_model0_composite
+  ascvd_10y    = df_model0_ascvd
 )
 
-# ============================================
-# 3. Helper functions
-# ============================================
-
-prep_extra_predictors <- function(extra_df) {
-  keep_cols <- setdiff(names(extra_df), CVD_scores)
-  extra_df[, keep_cols, drop = FALSE]
-}
-
-build_score_plus_block <- function(score, block_name, score_specific_datasets, datasets_list) {
-  base_df <- score_specific_datasets[[score]]
-  extra_df <- datasets_list[[block_name]]
-  extra_predictors <- prep_extra_predictors(extra_df)
-  dplyr::left_join(base_df, extra_predictors, by = "Sample_ID")
-}
 
 # ============================================
-# 4. Apply column missingness exclusion
+# 3. Apply column missingness exclusion
 # ============================================
 
-MISSINGNESS_THRESHOLD <- 0.40
+missingness_threshold <- 0.40
 
-remove_high_missing_cols <- function(df, threshold = MISSINGNESS_THRESHOLD,
+remove_high_missing_cols <- function(df, threshold = missingness_threshold,
                                      exclude_cols = c("Sample_ID", CVD_scores)) {
   cols_to_check <- setdiff(names(df), exclude_cols)
   if (length(cols_to_check) == 0) return(df)
@@ -223,10 +192,10 @@ datasets_list <- lapply(datasets_list, remove_high_missing_cols)
 score_specific_datasets <- lapply(score_specific_datasets, remove_high_missing_cols)
 
 # ============================================
-# 5. Data sanitisation
+# 4. Ensure Column types are factors and numeric only
 # ============================================
 
-sanitize_df <- function(df) {
+ensure_column_types <- function(df) {
   for (col in names(df)) {
     if (col %in% c("Sample_ID", CVD_scores)) next
     x <- df[[col]]
@@ -235,29 +204,11 @@ sanitize_df <- function(df) {
   df
 }
 
-datasets_list <- lapply(datasets_list, sanitize_df)
-score_specific_datasets <- lapply(score_specific_datasets, sanitize_df)
+datasets_list <- lapply(datasets_list, ensure_column_types)
+score_specific_datasets <- lapply(score_specific_datasets, ensure_column_types)
 
 # ============================================
-# 6. Score-specific + Block combinations (UNUSED — kept for reference)
-# ============================================
-
-# cat("\n=== CREATING SCORE-SPECIFIC + BLOCK COMBINATIONS ===\n")
-# 
-# score_plus_block_datasets <- list()
-# for (score in names(score_specific_datasets)) {
-#   for (block in names(datasets_list)) {
-#     combo_name <- paste0(score, "_plus_", block)
-#     score_plus_block_datasets[[combo_name]] <- build_score_plus_block(
-#       score, block, score_specific_datasets, datasets_list
-#     )
-#   }
-# }
-# cat(sprintf("Created %d combinations\n", length(score_plus_block_datasets)))
-
-
-# ============================================
-# 7. CV and tuning settings
+# 5. CV and tuning settings
 # ============================================
 
 OUTER_FOLDS   <- 5
@@ -271,7 +222,7 @@ cat(sprintf("Inner CV: %d-fold (for hyperparameter tuning)\n", INNER_FOLDS))
 cat(sprintf("Grid size: %d\n", GRID_SIZE))
 
 # ============================================
-# 8. Model specifications
+# 6. Model specifications
 # ============================================
 
 elastic_net_spec <- linear_reg(penalty = tune(), mixture = tune()) %>%
@@ -301,7 +252,9 @@ model_specs <- list(
 )
 
 # ============================================
-# 9. One-SE rule helper
+# 7. One-SE rule helper
+# For each model, the one-SE rule selects the simplest model within one SE of the best RMSE.
+# desc() indicates that higher parameter values correspond to simpler models
 # ============================================
 
 select_one_se <- function(tune_result, wf_id) {
@@ -320,7 +273,7 @@ select_one_se <- function(tune_result, wf_id) {
 }
 
 # ============================================
-# 10. Main nested CV function
+# 8. Main nested CV function
 # ============================================
 
 run_nested_cv <- function(df, outcome, dataset_name,
@@ -330,15 +283,14 @@ run_nested_cv <- function(df, outcome, dataset_name,
                           seed = 42) {
   
   set.seed(seed)
-  cvd_scores_local <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y", "mean_risk")
-  
+
   if (!outcome %in% names(df)) {
     warning(sprintf("Outcome '%s' not found in '%s'", outcome, dataset_name))
     return(NULL)
   }
   
   # ---- Prepare data ----
-  other_scores <- setdiff(cvd_scores_local, outcome)
+  other_scores <- setdiff(CVD_scores, outcome)
   df_clean <- df %>%
     select(-any_of(other_scores)) %>%
     filter(!is.na(.data[[outcome]]))
@@ -464,7 +416,6 @@ run_nested_cv <- function(df, outcome, dataset_name,
         train_preds <- predict(final_fit, new_data = outer_train) %>%
           bind_cols(outer_train %>% select(all_of(outcome)))
         
-        # ---- FIX: Classic R² and Q² (1 - SS_res/SS_tot) ----
         train_mean <- mean(train_preds[[outcome]], na.rm = TRUE)
         
         # Training R²
@@ -511,7 +462,6 @@ run_nested_cv <- function(df, outcome, dataset_name,
     }
     
     outer_fold_results[[fold_label]] <- bind_rows(fold_metrics)
-    cat("done\n")
   }
   
   # ---- Aggregate outer-fold metrics ----
@@ -534,7 +484,6 @@ run_nested_cv <- function(df, outcome, dataset_name,
       cv_rmse_sd = round(sd(test_rmse, na.rm = TRUE), 3),
       cv_cal_slope     = round(mean(test_cal_slope, na.rm = TRUE), 3),
       cv_cal_intercept = round(mean(test_cal_intercept, na.rm = TRUE), 3),
-      # FIX: Q²/R² ratio (was R²/Q²)
       q2_r2_ratio  = round(
         ifelse(mean(train_rsq, na.rm = TRUE) > 0.01,
                mean(test_rsq, na.rm = TRUE) / mean(train_rsq, na.rm = TRUE), NA), 2),
@@ -545,7 +494,6 @@ run_nested_cv <- function(df, outcome, dataset_name,
     select(dataset, outcome, model, n_total, n_train, n_test, n_predictors, everything())
   
   # ---- Final refit on full data for tuning diagnostics ----
-  cat("    Final refit on full data for tuning plots...\n")
   final_inner <- tryCatch(run_inner_tuning(df_clean), error = function(e) NULL)
   
   list(
@@ -558,19 +506,14 @@ run_nested_cv <- function(df, outcome, dataset_name,
 }
 
 
-
 # ============================================
-# 11. Build task list (no composite)
+# 9. Build task list
 # ============================================
-
-cat("\n=== BUILDING TASK LIST ===\n")
-
-CVD_scores_final <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
 
 task_list <- list()
 task_counter <- 1
 
-for (score_name in CVD_scores_final) {
+for (score_name in CVD_scores) {
   task_list[[task_counter]] <- list(
     df = score_specific_datasets[[score_name]],
     outcome = score_name,
@@ -580,7 +523,7 @@ for (score_name in CVD_scores_final) {
   task_counter <- task_counter + 1
 }
 
-for (outcome in CVD_scores_final) {
+for (outcome in CVD_scores) {
   task_list[[task_counter]] <- list(
     df = datasets_list[["all_data"]],
     outcome = outcome,
@@ -593,7 +536,7 @@ for (outcome in CVD_scores_final) {
 cat(sprintf("Total tasks: %d\n", length(task_list)))
 
 # ============================================
-# 12. Full run with incremental saving
+# 10. Full run with incremental saving
 # ============================================
 
 plan(multisession, workers = CPUS)
@@ -659,39 +602,18 @@ if (length(failed_tasks) > 0) {
 }
 
 # ============================================
-# 13. Compile results
+# 11. Compile results
 # ============================================
 
 all_metrics <- bind_rows(lapply(all_results, function(x) x$summary_metrics))
-
 all_outer_folds <- bind_rows(lapply(names(all_results), function(task_name) {
   x <- all_results[[task_name]]
   x$outer_fold_metrics %>%
     mutate(dataset = x$dataset_name, outcome_name = x$outcome)
 }))
 
-
-model_rankings <- all_metrics %>%
-  group_by(dataset, outcome) %>%
-  mutate(rank = rank(cv_mae)) %>%
-  ungroup() %>%
-  group_by(model) %>%
-  summarise(
-    mean_rank      = round(mean(rank), 2),
-    times_best     = sum(rank == 1),
-    mean_q2        = round(mean(q2, na.rm = TRUE), 3),
-    mean_cv_mae    = round(mean(cv_mae, na.rm = TRUE), 3),
-    mean_q2_r2_ratio = round(mean(q2_r2_ratio, na.rm = TRUE), 2),
-    .groups = "drop"
-  ) %>%
-  arrange(mean_rank)
-
-cat("\n--- Model Rankings ---\n")
-print(model_rankings)
-
 excel_output <- list(
   All_Metrics       = all_metrics,
-  Model_Rankings    = model_rankings,
   Outer_Fold_Detail = all_outer_folds
 )
 
@@ -702,21 +624,16 @@ for (sheet_name in names(excel_output)) {
   freezePane(wb, sheet_name, firstRow = TRUE)
   setColWidths(wb, sheet_name, cols = 1:ncol(excel_output[[sheet_name]]), widths = "auto")
 }
-
 saveWorkbook(wb, file.path(output_dir, "nested_cv_model_comparison_results.xlsx"), overwrite = TRUE)
+
 qs2::qs_save(list(
-  metrics        = all_metrics,
-  outer_folds    = all_outer_folds,
-  model_rankings = model_rankings
+  metrics     = all_metrics,
+  outer_folds = all_outer_folds
 ), file.path(output_dir, "nested_cv_compiled_objects.qs2"))
 
-
-
 # ============================================
-# 14. Combined comparison table (with Q²/R² ratio)
+# 12. Combined comparison table
 # ============================================
-
-cat("\n=== GENERATING COMBINED TABLE ===\n")
 
 model_order <- c("elastic_net", "sparse_pls", "random_forest", "xgboost", "svm", "knn")
 model_labels_table <- c(
@@ -745,7 +662,6 @@ format_block <- function(metrics_df, score, dataset_name) {
       `Train R²` = sprintf("%.3f", train_rsq),
       `Q²`       = sprintf("%.3f \u00b1 %.3f", q2, q2_sd),
       `CV MAE`   = sprintf("%.3f \u00b1 %.3f", cv_mae, cv_mae_sd),
-      # FIX: Q²/R² ratio instead of R²/Q²
       `Q²/R² Ratio` = ifelse(!is.na(q2_r2_ratio), sprintf("%.2f", q2_r2_ratio), "\u2013")
     )
 }
@@ -854,13 +770,11 @@ doc <- read_docx() %>%
   body_end_section_landscape() %>%
   body_add_flextable(value = ft)
 print(doc, target = file.path(output_dir, "Table_Model_Comparison_NestedCV.docx"))
-cat("Saved Table_Model_Comparison_NestedCV.docx\n")
 
 # ============================================
-# 15. Bar plots and tuning diagnostics
+# 13. Performance bar plots
 # ============================================
 
-# ---- Shared labels and colours (defined once) ----
 model_labels <- c(elastic_net = "Elastic Net", sparse_pls = "Sparse PLS",
                   random_forest = "Random Forest", xgboost = "XGBoost",
                   svm = "SVM-RBF", knn = "k-NN")
@@ -872,93 +786,68 @@ model_colors <- c("Elastic Net" = "#E69F00", "Sparse PLS" = "#56B4E9",
                   "Random Forest" = "#009E73", "XGBoost" = "#F0E442",
                   "SVM-RBF" = "#0072B2", "k-NN" = "#D55E00")
 
-param_display_names <- c(
-  penalty = "Penalty (\u03bb)", num_comp = "Number of Components",
-  mtry = "Variables per Split (mtry)", learn_rate = "Learning Rate",
-  cost = "Cost (C)", neighbors = "Neighbors (k)"
-)
-
 model_plot_order <- c("elastic_net", "sparse_pls", "random_forest",
                       "xgboost", "svm", "knn")
 
-score_specific_names <- c("QRISK3_risk_specific", "SCORE2_score_specific",
-                          "frs_10y_specific", "ascvd_10y_specific")
+make_barplots <- function(plot_data, plot_title) {
+  p_r2 <- plot_data %>%
+    ggplot(aes(x = train_rsq, y = outcome_label, fill = model_label)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+    scale_fill_manual(values = model_colors) +
+    scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+    labs(title = "Training R\u00b2", x = expression(R^2), y = NULL, fill = "Model") +
+    theme_minimal() +
+    theme(legend.position = "none", panel.grid.major.y = element_blank())
+  
+  p_q2 <- plot_data %>%
+    ggplot(aes(x = q2, y = outcome_label, fill = model_label)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+    geom_errorbarh(aes(xmin = q2 - q2_sd, xmax = q2 + q2_sd),
+                   position = position_dodge(width = 0.8), height = 0.3) +
+    scale_fill_manual(values = model_colors) +
+    scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+    labs(title = "Q\u00b2", x = expression(Q^2), y = NULL, fill = "Model") +
+    theme_minimal() +
+    theme(legend.position = "right", panel.grid.major.y = element_blank())
+  
+  (p_r2 | p_q2) +
+    plot_layout(guides = "collect") +
+    plot_annotation(title = plot_title,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+}
 
-# ---- Bar plots: Score-specific ----
+# Score-specific bar plots
+score_specific_names <- paste0(CVD_scores, "_specific")
+
 ss_data <- all_metrics %>%
   filter(dataset %in% score_specific_names, outcome %in% names(outcome_labels)) %>%
   mutate(outcome_label = factor(outcome_labels[outcome], levels = outcome_labels),
-         model_label = factor(model_labels[model], levels = model_labels))
+         model_label   = factor(model_labels[model], levels = model_labels))
 
-p1 <- ss_data %>%
-  ggplot(aes(x = train_rsq, y = outcome_label, fill = model_label)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
-  scale_fill_manual(values = model_colors) +
-  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
-  labs(title = "Training R\u00b2", x = expression(R^2), y = NULL, fill = "Model") +
-  theme_minimal() +
-  theme(legend.position = "none", panel.grid.major.y = element_blank())
-
-p2 <- ss_data %>%
-  ggplot(aes(x = q2, y = outcome_label, fill = model_label)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
-  geom_errorbarh(aes(xmin = q2 - q2_sd, xmax = q2 + q2_sd),
-                 position = position_dodge(width = 0.8), height = 0.3) +
-  scale_fill_manual(values = model_colors) +
-  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
-  labs(title = "Q\u00b2", x = expression(Q^2), y = NULL, fill = "Model") +
-  theme_minimal() +
-  theme(legend.position = "right", panel.grid.major.y = element_blank())
-
-combined_ss <- (p1 | p2) +
-  plot_layout(guides = "collect") +
-  plot_annotation(title = "Model Performance: Score-Specific Inputs (Nested CV)",
-                  theme = theme(plot.title = element_text(hjust = 0.5, face = "bold")))
-
+combined_ss <- make_barplots(ss_data, "Model Performance: Score-Specific Inputs (Nested CV)")
 ggsave(file.path(output_dir, "barplot_score_specific.png"), combined_ss, width = 12, height = 6, dpi = 300)
 ggsave(file.path(output_dir, "barplot_score_specific.pdf"), combined_ss, width = 12, height = 6)
 
-# ---- Bar plots: Full predictor set ----
+# Full predictor set bar plots
 fps_data <- all_metrics %>%
   filter(dataset == "full_predictor_set", outcome %in% names(outcome_labels)) %>%
   mutate(outcome_label = factor(outcome_labels[outcome], levels = outcome_labels),
-         model_label = factor(model_labels[model], levels = model_labels))
+         model_label   = factor(model_labels[model], levels = model_labels))
 
-p3 <- fps_data %>%
-  ggplot(aes(x = train_rsq, y = outcome_label, fill = model_label)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
-  scale_fill_manual(values = model_colors) +
-  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
-  labs(title = "Training R\u00b2", x = expression(R^2), y = NULL, fill = "Model") +
-  theme_minimal() +
-  theme(legend.position = "none", panel.grid.major.y = element_blank())
-
-p4 <- fps_data %>%
-  ggplot(aes(x = q2, y = outcome_label, fill = model_label)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
-  geom_errorbarh(aes(xmin = q2 - q2_sd, xmax = q2 + q2_sd),
-                 position = position_dodge(width = 0.8), height = 0.3) +
-  scale_fill_manual(values = model_colors) +
-  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
-  labs(title = "Q\u00b2", x = expression(Q^2), y = NULL, fill = "Model") +
-  theme_minimal() +
-  theme(legend.position = "right", panel.grid.major.y = element_blank())
-
-combined_fps <- (p3 | p4) +
-  plot_layout(guides = "collect") +
-  plot_annotation(title = "Model Performance: Full Predictor Set (Nested CV)",
-                  theme = theme(plot.title = element_text(hjust = 0.5, face = "bold")))
-
+combined_fps <- make_barplots(fps_data, "Model Performance: Full Predictor Set (Nested CV)")
 ggsave(file.path(output_dir, "barplot_full_predictor_set.png"), combined_fps, width = 12, height = 6, dpi = 300)
 ggsave(file.path(output_dir, "barplot_full_predictor_set.pdf"), combined_fps, width = 12, height = 6)
 
-cat("Bar plots saved\n")
 
 # ============================================
-# 16. Tuning parameter diagnostics
+# 14. Tuning parameter diagnostics
 # ============================================
 
-cat("\n=== TUNING PARAMETER DIAGNOSTICS ===\n")
+param_display_names <- c(
+  penalty = "Penalty (\u03bb)", num_comp = "Number of Components",
+  mtry = "Variables per Split (mtry)", learn_rate = "Learning Rate",
+  cost = "Cost (C)", neighbors = "Neighbours (k)"
+)
 
 primary_tuning_params <- c(
   recipe_elastic_net   = "penalty",
@@ -1087,7 +976,7 @@ if (nrow(all_tuning_data) > 0) {
     p
   }
   
-  # ---- 16a. Per-dataset overview plots ----
+  # ---- Per-dataset overview plots ----
   for (ds_pattern in c("_specific", "full_predictor_set")) {
     if (ds_pattern == "_specific") {
       ds_data   <- all_tuning_data %>% filter(str_detect(dataset, "_specific"))
@@ -1126,7 +1015,7 @@ if (nrow(all_tuning_data) > 0) {
     }
   }
   
-  # ---- 16b. Per-score detailed tuning plots ----
+  # ---- Per-score detailed tuning plots ----
   for (score in names(outcome_labels)) {
     score_label       <- outcome_labels[score]
     score_specific_ds <- paste0(score, "_specific")
@@ -1180,12 +1069,9 @@ if (nrow(all_tuning_data) > 0) {
 }
 
 # ============================================
-# 17. Selected hyperparameter table
+# 15. Selected hyperparameter table
 # ============================================
 
-cat("\n=== SELECTED HYPERPARAMETER TABLE ===\n")
-
-# Parameter display names for the table
 param_labels <- c(
   penalty        = "\u03bb (penalty)",
   mixture        = "\u03b1 (mixture)",
@@ -1205,7 +1091,6 @@ param_labels <- c(
   dist_power     = "Minkowski p"
 )
 
-# Define which parameters each model has (in display order)
 model_param_map <- list(
   elastic_net   = c("penalty", "mixture"),
   sparse_pls    = c("num_comp", "predictor_prop"),
@@ -1216,7 +1101,6 @@ model_param_map <- list(
   knn           = c("neighbors", "weight_func", "dist_power")
 )
 
-# Extract best params from final_tuning (full-data refit) for each task
 extract_best_params <- function(result) {
   if (is.null(result$final_tuning)) return(NULL)
   best_params <- result$final_tuning$best_params
@@ -1231,13 +1115,9 @@ extract_best_params <- function(result) {
       if (p %in% names(bp)) {
         val <- bp[[p]]
         if (is.numeric(val)) {
-          if (abs(val) < 0.001 & val != 0) {
-            sprintf("%.2e", val)
-          } else if (val == round(val)) {
-            sprintf("%d", as.integer(val))
-          } else {
-            sprintf("%.4f", val)
-          }
+          if (abs(val) < 0.001 & val != 0) sprintf("%.2e", val)
+          else if (val == round(val))        sprintf("%d", as.integer(val))
+          else                               sprintf("%.4f", val)
         } else {
           as.character(val)
         }
@@ -1247,12 +1127,12 @@ extract_best_params <- function(result) {
     })
     
     tibble(
-      dataset  = result$dataset_name,
-      outcome  = result$outcome,
-      model    = model_name,
-      param    = expected_params,
+      dataset     = result$dataset_name,
+      outcome     = result$outcome,
+      model       = model_name,
+      param       = expected_params,
       param_label = param_labels[expected_params],
-      value    = param_values
+      value       = param_values
     )
   })
 }
@@ -1261,55 +1141,39 @@ all_best_params <- map_dfr(all_results, extract_best_params)
 
 if (nrow(all_best_params) > 0) {
   
-  # ---- Build one table per dataset type ----
+  score_order        <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
+  score_labels_short <- c(QRISK3_risk = "QRISK3", SCORE2_score = "SCORE2",
+                          frs_10y = "Framingham", ascvd_10y = "ASCVD")
+  
   for (ds_type in c("score_specific", "full_predictor_set")) {
     
     if (ds_type == "score_specific") {
-      ds_data <- all_best_params %>% filter(str_detect(dataset, "_specific"))
-      ds_title <- "Score-Specific Inputs"
+      ds_data   <- all_best_params %>% filter(str_detect(dataset, "_specific"))
+      ds_title  <- "Score-Specific Inputs"
       ds_suffix <- "score_specific"
     } else {
-      ds_data <- all_best_params %>% filter(dataset == "full_predictor_set")
-      ds_title <- "Full Predictor Set"
+      ds_data   <- all_best_params %>% filter(dataset == "full_predictor_set")
+      ds_title  <- "Full Predictor Set"
       ds_suffix <- "full_predictor_set"
     }
     
     if (nrow(ds_data) == 0) next
     
-    # Pivot: rows = model + parameter, columns = outcome scores
-    score_order <- c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")
-    score_labels_short <- c(
-      QRISK3_risk = "QRISK3", SCORE2_score = "SCORE2",
-      frs_10y = "Framingham", ascvd_10y = "ASCVD"
-    )
-    
-    model_order_local <- c("elastic_net", "sparse_pls", "random_forest",
-                           "xgboost", "svm", "knn")
-    model_labels_local <- c(
-      elastic_net = "Elastic Net", sparse_pls = "Sparse PLS",
-      random_forest = "Random Forest", xgboost = "XGBoost",
-      svm = "SVM-RBF", knn = "k-NN"
-    )
-    
-    # Build table rows
-    table_rows <- tibble()
+    table_rows           <- tibble()
     model_header_indices <- c()
     
-    for (m in model_order_local) {
+    for (m in model_plot_order) {
       m_data <- ds_data %>% filter(model == m)
       if (nrow(m_data) == 0) next
       
       # Model header row
-      header_row <- tibble(Parameter = model_labels_local[m])
-      for (s in score_order) {
-        header_row[[score_labels_short[s]]] <- ""
-      }
+      header_row <- tibble(Parameter = model_labels[m])
+      for (s in score_order) header_row[[score_labels_short[s]]] <- ""
       model_header_indices <- c(model_header_indices, nrow(table_rows) + 1)
       table_rows <- bind_rows(table_rows, header_row)
       
       # Parameter rows
-      params_for_model <- model_param_map[[m]]
-      for (p in params_for_model) {
+      for (p in model_param_map[[m]]) {
         param_row <- tibble(Parameter = paste0("    ", param_labels[p]))
         for (s in score_order) {
           val <- m_data %>% filter(outcome == s, param == p) %>% pull(value)
@@ -1319,7 +1183,6 @@ if (nrow(all_best_params) > 0) {
       }
     }
     
-    # Create flextable
     ft_params <- flextable(table_rows) %>%
       font(fontname = "Arial", part = "all") %>%
       style(part = "body",
@@ -1345,23 +1208,20 @@ if (nrow(all_best_params) > 0) {
         hline(i = idx, border = fp_border(width = 0.5, color = "grey60"), part = "body")
     }
     
-    # Save
     doc_params <- read_docx() %>%
-      body_add_par(paste("Selected Hyperparameters:", ds_title),
-                   style = "heading 2") %>%
+      body_add_par(paste("Selected Hyperparameters:", ds_title), style = "heading 2") %>%
       body_add_flextable(value = ft_params)
     print(doc_params, target = file.path(output_dir,
                                          paste0("Table_Selected_Hyperparameters_", ds_suffix, ".docx")))
     cat(sprintf("  Saved Table_Selected_Hyperparameters_%s.docx\n", ds_suffix))
   }
   
-  # ---- Also save as Excel for reference ----
+  # Excel reference copy
   params_wide <- all_best_params %>%
-    filter(outcome %in% c("QRISK3_risk", "SCORE2_score", "frs_10y", "ascvd_10y")) %>%
+    filter(outcome %in% score_order) %>%
     mutate(
-      model_label = model_labels[model],
-      outcome_label = c(QRISK3_risk = "QRISK3", SCORE2_score = "SCORE2",
-                        frs_10y = "Framingham", ascvd_10y = "ASCVD")[outcome]
+      model_label   = model_labels[model],
+      outcome_label = score_labels_short[outcome]
     ) %>%
     select(dataset, outcome_label, model_label, param_label, value) %>%
     pivot_wider(names_from = outcome_label, values_from = value)
@@ -1370,13 +1230,11 @@ if (nrow(all_best_params) > 0) {
   addWorksheet(wb_hp, "Selected_Hyperparameters")
   writeData(wb_hp, "Selected_Hyperparameters", params_wide)
   freezePane(wb_hp, "Selected_Hyperparameters", firstRow = TRUE)
-  setColWidths(wb_hp, "Selected_Hyperparameters", cols = 1:ncol(params_wide), widths = "auto")
+  setColWidths(wb_hp, "Selected_Hyperparameters",
+               cols = seq_len(ncol(params_wide)), widths = "auto")
   saveWorkbook(wb_hp, file.path(output_dir, "selected_hyperparameters.xlsx"), overwrite = TRUE)
-  
   cat("  Saved selected_hyperparameters.xlsx\n")
   
 } else {
   cat("  No tuning results available for hyperparameter table\n")
 }
-
-cat("\n=== ANALYSIS COMPLETE ===\n")
