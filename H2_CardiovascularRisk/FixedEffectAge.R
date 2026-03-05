@@ -1,8 +1,12 @@
+################################################################################
 ### Cardiovascular Risk Scores and Predictor Associations: 
-### Generalised Linear Models with Fixed Effects (Age-Adjusted)
+### Generalised Linear Models with Fixed Effects (statin, supplements, study site + Age)
 ### Author: Luisa Delius
+################################################################################
 
-# ─── Packages ─────────────────────────────────────────────────────────────────
+# ============================================
+# Set everything up
+# ============================================
 library(tidyverse)
 library(broom)
 library(patchwork)
@@ -11,10 +15,12 @@ library(DHARMa)
 
 set.seed(42)
 
-# ─── 1. Load Data ─────────────────────────────────────────────────────────────
 wkdir <- "/Users/luisadelius/Documents/Code/project_one/Teams_Files/processed_data"
 setwd(wkdir)
 
+# ============================================
+# 1. Load data
+# ============================================
 df_fatty_acids_predictors <- readRDS("df_fatty_acids_predictor_statin_suppl.rds") %>% arrange(Sample_ID)
 df_lipidomics_predictors  <- readRDS("df_lipidomics_predictor_statin_suppl.rds") %>% arrange(Sample_ID)
 df_REDcap_demographics    <- readRDS("df_REDcap_demographics_predictor.rds") %>% arrange(Sample_ID)
@@ -35,23 +41,17 @@ df_body_composition <- readRDS("df_body_composition_metrics.rds") %>%
   arrange(Sample_ID) %>%
   full_join(df_risk_factors %>% select(z_Body.fat, z_Fat.free.mass, Sample_ID), by = "Sample_ID")
 
-# ─── 1b. Load Age and z-scale it ─────────────────────────────────────────────
 # Load the original risk factors to get Age before it was dropped
 df_age_bmi <- readRDS("df_risk_factor_predictors.rds") %>%
   select(Sample_ID, Age) %>%
   mutate(z_Age = as.numeric(scale(Age))) %>%
   arrange(Sample_ID)
 
-# df_bmi <- readRDS("df_risk_factor_predictors.rds") %>%
-#   select(Sample_ID, z_BMI) %>%
-#   arrange(Sample_ID)
-
-# ─── 2. Prepare Merged DataFrames for GLM ────────────────────────────────────
+# Prepare Merged Data frames for GLM 
 df_fixed_effects <- df_risk_factors %>%
   select(Sample_ID, Gender, Country) %>%
   full_join(df_lipidomics_predictors %>% select(Sample_ID, Statins, Supplements), by = "Sample_ID") %>%
   full_join(df_age_bmi %>% select(Sample_ID, z_Age), by = "Sample_ID")
-  # full_join(df_bmi %>% select(Sample_ID, z_BMI), by = "Sample_ID")
 
 df_cvd_and_fatty_acids <- df_all_cvd_risk_scores %>%
   full_join(df_fatty_acids_predictors %>% select(-QRISK3_risk), by = "Sample_ID") %>%
@@ -77,7 +77,9 @@ df_cvd_and_urine_nmr <- df_all_cvd_risk_scores %>%
   full_join(df_urine_nmr_data, by = "Sample_ID") %>%
   full_join(df_fixed_effects, by = "Sample_ID")
 
-# ─── 3. Define Predictors and Outcomes ────────────────────────────────────────
+# ============================================
+# 3. Define Predictors and Outcomes
+# ============================================
 lipid_predictors        <- names(select(df_lipidomics_predictors, starts_with("z_")))
 fatty_acid_predictors   <- names(select(df_fatty_acids_predictors, starts_with("z_")))
 REDcap_numeric_preds    <- names(select(df_REDcap_demographics, starts_with("z_")))
@@ -86,8 +88,7 @@ risk_factor_predictors  <- names(select(df_risk_factors, starts_with("z_"), -z_B
 body_comp_predictors    <- names(select(df_body_composition, starts_with("z_")))
 urine_nmr_predictors    <- names(select(df_urine_nmr_data, starts_with("z_")))
 
-# Safety: remove z_Age from any predictor set in case it slipped in
-# Add this line alongside the existing setdiff calls:
+# Exclude z_Age (covariate, not a predictor)
 lipid_predictors       <- setdiff(lipid_predictors, c("z_Age"))
 fatty_acid_predictors  <- setdiff(fatty_acid_predictors, c("z_Age"))
 REDcap_numeric_preds   <- setdiff(REDcap_numeric_preds, c("z_Age"))
@@ -99,12 +100,15 @@ fixed_effects <- c("Statins", "Supplements", "Gender", "Country", "z_Age")
 
 outcomes <- c("QRISK3_risk", "SCORE2_score", "ascvd_10y", "frs_10y")
 
-# ─── 4. GLM Functions ────────────────────────────────────────────────────────
-# 4.1 GLM for numeric (continuous) predictors
+# ============================================
+# 4. GLM Functions
+# ============================================
+# 4.1 GLM for numeric predictors
 run_glm_num <- function(data, outcomes, num_predictors, fixed_effects) {
   fixed_part <- paste(fixed_effects, collapse = " + ")
+  models_list <- list()
   
-  map_dfr(num_predictors, function(var) {
+  results <- map_dfr(num_predictors, function(var) {
     map_dfr(outcomes, function(outcome) {
       df_pair <- data %>%
         select(all_of(c(outcome, var, fixed_effects))) %>%
@@ -120,14 +124,18 @@ run_glm_num <- function(data, outcomes, num_predictors, fixed_effects) {
         data = df_pair, family = Gamma(link = "log")
       )
       
+      models_list[[paste(var, outcome, sep = "___")]] <<- model
+      
       tidy(model, conf.int = TRUE, exponentiate = TRUE) %>%
         filter(term == var) %>%
         mutate(predictor = var, level = NA_character_, outcome = outcome, n = nrow(df_pair))
     })
   })
+  
+  list(results = results, models = models_list)
 }
 
-# 4.2 GLM for factor (categorical) predictors
+# 4.2 GLM for factor predictors
 run_glm_fac <- function(data, outcomes, factor_predictors, fixed_effects) {
   fixed_part <- paste(fixed_effects, collapse = " + ")
   
@@ -158,29 +166,33 @@ run_glm_fac <- function(data, outcomes, factor_predictors, fixed_effects) {
   })
 }
 
-# ─── 5. Run GLMs ─────────────────────────────────────────────────────────────
-glm_lipid_num     <- run_glm_num(df_cvd_and_lipidomics, outcomes, lipid_predictors, fixed_effects)
-glm_fatty_num     <- run_glm_num(df_cvd_and_fatty_acids, outcomes, fatty_acid_predictors, fixed_effects)
-glm_urine_num     <- run_glm_num(df_cvd_and_urine_nmr, outcomes, urine_nmr_predictors, fixed_effects)
-glm_REDcap_num    <- run_glm_num(df_cvd_and_REDcap, outcomes, REDcap_numeric_preds, fixed_effects)
-glm_risk_num      <- run_glm_num(df_cvd_and_risk_factors, outcomes, risk_factor_predictors, fixed_effects)
-glm_body_comp_num <- run_glm_num(df_cvd_and_body_comp, outcomes, body_comp_predictors, fixed_effects)
-glm_REDcap_fac    <- run_glm_fac(df_cvd_and_REDcap, outcomes, REDcap_factor_preds, fixed_effects)
+# ============================================
+# 5. Run GLMs
+# ============================================
+glm_lipid     <- run_glm_num(df_cvd_and_lipidomics, outcomes, lipid_predictors, fixed_effects)
+glm_fatty     <- run_glm_num(df_cvd_and_fatty_acids, outcomes, fatty_acid_predictors, fixed_effects)
+glm_urine     <- run_glm_num(df_cvd_and_urine_nmr, outcomes, urine_nmr_predictors, fixed_effects)
+glm_REDcap    <- run_glm_num(df_cvd_and_REDcap, outcomes, REDcap_numeric_preds, fixed_effects)
+glm_risk      <- run_glm_num(df_cvd_and_risk_factors, outcomes, risk_factor_predictors, fixed_effects)
+glm_body_comp <- run_glm_num(df_cvd_and_body_comp, outcomes, body_comp_predictors, fixed_effects)
+glm_REDcap_fac <- run_glm_fac(df_cvd_and_REDcap, outcomes, REDcap_factor_preds, fixed_effects)
 
-# ─── 5b. Incremental Saves ───────────────────────────────────────────────────
+glm_lipid_num     <- glm_lipid$results
+glm_fatty_num     <- glm_fatty$results
+glm_urine_num     <- glm_urine$results
+glm_REDcap_num    <- glm_REDcap$results
+glm_risk_num      <- glm_risk$results
+glm_body_comp_num <- glm_body_comp$results
+
+all_models <- c(glm_lipid$models, glm_fatty$models, glm_urine$models,
+                glm_REDcap$models, glm_risk$models, glm_body_comp$models)
+
 incremental_dir <- file.path(wkdir, "glm_incremental_results_age_adjusted")
 dir.create(incremental_dir, showWarnings = FALSE, recursive = TRUE)
 
-saveRDS(glm_lipid_num,     file.path(incremental_dir, "glm_lipid_num_age_adj.rds"))
-saveRDS(glm_fatty_num,     file.path(incremental_dir, "glm_fatty_num_age_adj.rds"))
-saveRDS(glm_urine_num,     file.path(incremental_dir, "glm_urine_num_age_adj.rds"))
-saveRDS(glm_REDcap_num,    file.path(incremental_dir, "glm_REDcap_num_age_adj.rds"))
-saveRDS(glm_risk_num,      file.path(incremental_dir, "glm_risk_num_age_adj.rds"))
-saveRDS(glm_body_comp_num, file.path(incremental_dir, "glm_body_comp_num_age_adj.rds"))
-saveRDS(glm_REDcap_fac,    file.path(incremental_dir, "glm_REDcap_fac_age_adj.rds"))
-cat("Incremental GLM results saved to:", incremental_dir, "\n")
-
-# ─── 6. Combine Results and Apply Multiple Testing Correction ────────────────
+# ============================================
+# 6. Combine Results and Apply Multiple Testing Correction
+# ============================================
 all_results_glm <- bind_rows(
   glm_lipid_num     %>% mutate(predictor_set = "Lipids", comparison = NA_character_),
   glm_fatty_num     %>% mutate(predictor_set = "Fatty acids", comparison = NA_character_),
@@ -196,14 +208,12 @@ all_results_glm <- bind_rows(
     significant = if_else(p.adjusted < 0.05, "Significant", "Not significant")
   )
 
-cat("Total associations tested:", nrow(all_results_glm), "\n")
-cat("Significant (BH-adjusted p < 0.05):", sum(all_results_glm$significant == "Significant", na.rm = TRUE), "\n")
-
-# ─── 6b. Save Combined Results ───────────────────────────────────────────────
+# Save Combined Results 
 saveRDS(all_results_glm, file.path(incremental_dir, "all_results_glm_combined_age_adj.rds"))
-cat("Combined results saved.\n")
 
-# ─── 7. Plotting Helpers ─────────────────────────────────────────────────────
+# ============================================
+# 7. Plotting Helpers
+# ============================================
 rename_predictors <- function(term_plot) {
   case_when(
     term_plot == "z_whtr_waist_height_ratio_"      ~ "Waist-to-Height Ratio",
@@ -240,14 +250,10 @@ rename_predictor_sets <- function(predictor_set) {
   )
 }
 
-
-# ─── 8.0 Combined Figure: Age-Adjusted GLM Heatmap ───────────────────────────
-# Mirrors the structure of the main GLM figure (Figure 5) but for age-adjusted models.
-# Only continuous predictors were significant in both FDR and exploratory panels.
-# Colour scale fixed to match Figure 5 for comparability.
-
-# ── Data Preparation ─────────────────────────────────────────────────────────
-
+# ============================================
+# 8 Combined Figure: Age-Adjusted GLM Heatmap
+# ============================================
+# Data Preparation
 heatmap_data <- all_results_glm %>%
   filter(!is.na(estimate)) %>%
   mutate(
@@ -284,8 +290,7 @@ preds_3plus <- heatmap_exploratory %>%
 panel_a_cont <- heatmap_data %>% filter(term_plot_clean %in% fdr_sig_terms, !is_categorical)
 panel_b_cont <- heatmap_exploratory %>% filter(term_plot_clean %in% preds_3plus, !is_categorical)
 
-# ── Ordering ─────────────────────────────────────────────────────────────────
-
+# Ordering
 order_a_cont <- panel_a_cont %>%
   filter(is_fdr_sig) %>%
   group_by(term_plot_clean, predictor_set) %>%
@@ -299,12 +304,10 @@ order_b_cont <- panel_b_cont %>%
   arrange(predictor_set, desc(mean_effect)) %>%
   pull(term_plot_clean)
 
-# ── Fixed Colour Scale (matching Figure 5) ───────────────────────────────────
 # Use the same max_abs as the main figure for direct comparability
 max_abs_cont <- 0.78
 
-# ── Shared Theme ─────────────────────────────────────────────────────────────
-
+# Shared Theme
 legend_theme <- theme(
   legend.position    = "right",
   legend.title       = element_text(size = 10),
@@ -334,8 +337,7 @@ fill_continuous <- scale_fill_gradient2(
   labels = function(x) sprintf("%.2f", x)
 )
 
-# ── Title labels ─────────────────────────────────────────────────────────────
-
+# Title labels
 title_a <- wrap_elements(
   full = grid::textGrob(
     label = expression(bold("A) Significant Associations After Multiple Testing Correction (") * bold(italic(p)[adj]) * bold(" < 0.05, *)")),
@@ -352,8 +354,7 @@ title_b <- wrap_elements(
   )
 )
 
-# ── Panel A: Continuous (FDR-significant) ────────────────────────────────────
-
+# Panel A: Continuous (FDR-significant)
 p_a_cont <- ggplot(panel_a_cont,
                    aes(x = outcome,
                        y = factor(term_plot_clean, levels = rev(order_a_cont)),
@@ -371,8 +372,7 @@ p_a_cont <- ggplot(panel_a_cont,
     plot.margin  = margin(2, 5, 2, 5)
   )
 
-# ── Panel B: Continuous (exploratory) ────────────────────────────────────────
-
+# Panel B: Continuous (exploratory)
 p_b_cont <- ggplot(panel_b_cont,
                    aes(x = outcome,
                        y = factor(term_plot_clean, levels = rev(order_b_cont)),
@@ -390,8 +390,7 @@ p_b_cont <- ggplot(panel_b_cont,
     plot.margin  = margin(2, 5, 5, 5)
   )
 
-# ── Stack everything ─────────────────────────────────────────────────────────
-
+# Stack everything 
 n_a_cont <- length(unique(panel_a_cont$term_plot_clean))
 n_b_cont <- length(unique(panel_b_cont$term_plot_clean))
 
@@ -400,21 +399,15 @@ combined_final <- title_a / p_a_cont / title_b / p_b_cont +
     heights = c(1, n_a_cont, 1, n_b_cont)
   )
 
-# ── Save ─────────────────────────────────────────────────────────────────────
-
+# Save
 total_rows <- n_a_cont + n_b_cont
 plot_height <- total_rows * 0.45 + 5
 
 ggsave("combined_glm_heatmap_age_adj.png", combined_final,
        width = 13, height = plot_height, dpi = 300)
 
-cat("Saved combined_glm_heatmap_age_adj.png\n")
-cat(sprintf("Panel A: %d continuous predictors\n", n_a_cont))
-cat(sprintf("Panel B: %d continuous predictors\n", n_b_cont))
-cat(sprintf("Plot dimensions: 13 x %.1f inches\n", plot_height))
 
-# ── Save individual plots ────────────────────────────────────────────────────
-
+# Save individual plots
 individual_fdr <- title_a / p_a_cont +
   plot_layout(heights = c(1, n_a_cont)) +
   plot_annotation(
@@ -442,8 +435,9 @@ ggsave("exploratory_heatmap_3plus_scores_split_age_adj.png", individual_exp,
        width = 12, height = n_b_cont * 0.4 + 3, dpi = 300)
 
 
-
-# ─── 10. Supplementary Tables ────────────────────────────────────────────────
+# ============================================
+# 9. Supplementary Tables
+# ============================================
 create_wide_supp_table <- function(data, predictor_set_name) {
   df_wide <- data %>%
     filter(predictor_set == predictor_set_name) %>%
@@ -515,98 +509,63 @@ save_as_docx(
 )
 
 ##################################################################################
-# GLM Evaluation by deviance stats and DHARMa
+# 10. GLM Evaluation by deviance stats and DHARMa
 ##################################################################################
 
-# ─── 1. Deviance Statistics ──────────────────────────────────────────────────
-calc_deviance_stats <- function(model, predictor, outcome, n) {
+# 10.1. Deviance Statistics
+deviance_all <- map_dfr(names(all_models), function(key) {
+  model <- all_models[[key]]
+  parts <- str_split(key, "___", simplify = TRUE)
+  
   tibble(
-    predictor = predictor,
-    outcome = outcome,
-    n = n,
-    deviance = model$deviance,
-    df_residual = model$df.residual,
+    predictor      = parts[1],
+    outcome        = parts[2],
+    n              = nrow(model$data),
+    deviance       = model$deviance,
+    df_residual    = model$df.residual,
     deviance_ratio = model$deviance / model$df.residual,
-    AIC = AIC(model)
+    AIC            = AIC(model)
   )
-}
-
-run_deviance_for_set <- function(data, predictors, predictor_set_name) {
-  map_dfr(predictors, function(var) {
-    map_dfr(outcomes, function(outcome) {
-      df_pair <- data %>%
-        select(all_of(c(outcome, var, fixed_effects))) %>%
-        drop_na()
-      
-      if (nrow(df_pair) == 0) return(tibble())
-      for (fe in fixed_effects) {
-        if (is.factor(df_pair[[fe]]) && n_distinct(df_pair[[fe]]) < 2) return(tibble())
-      }
-      
-      model <- glm(as.formula(paste(outcome, "~", var, "+", paste(fixed_effects, collapse = " + "))),
-                   data = df_pair, family = Gamma(link = "log"))
-      calc_deviance_stats(model, var, outcome, nrow(df_pair))
-    })
-  }) %>% mutate(predictor_set = predictor_set_name)
-}
-
-deviance_all <- bind_rows(
-  run_deviance_for_set(df_cvd_and_lipidomics, lipid_predictors, "Lipids"),
-  run_deviance_for_set(df_cvd_and_fatty_acids, fatty_acid_predictors, "Fatty acids"),
-  run_deviance_for_set(df_cvd_and_risk_factors, risk_factor_predictors, "Risk factors"),
-  run_deviance_for_set(df_cvd_and_body_comp, body_comp_predictors, "Body composition"),
-  run_deviance_for_set(df_cvd_and_urine_nmr, urine_nmr_predictors, "Urine NMR"),
-  run_deviance_for_set(df_cvd_and_REDcap, REDcap_numeric_preds, "REDCap numeric")
-)
+})
 
 deviance_summary <- deviance_all %>%
   group_by(outcome) %>%
   summarise(
-    n_models = n(),
-    mean_dev_ratio = mean(deviance_ratio),
+    n_models         = n(),
+    mean_dev_ratio   = mean(deviance_ratio),
     median_dev_ratio = median(deviance_ratio),
-    sd_dev_ratio = sd(deviance_ratio)
+    sd_dev_ratio     = sd(deviance_ratio)
   ) %>%
   arrange(desc(mean_dev_ratio))
 
 print("Deviance Summary by Outcome (Age-Adjusted):")
 print(deviance_summary)
 
-# ─── 2. DHARMa Diagnostics ───────────────────────────────────────────────────
-test_dharma_per_outcome <- function() {
-  pred_name <- risk_factor_predictors[1]
-  
-  map_dfr(outcomes, function(outcome) {
-    df_pair <- df_cvd_and_risk_factors %>%
-      select(all_of(c(outcome, pred_name)), Statins, Supplements, Gender, Country, z_Age) %>%
-      drop_na()
-    
-    model <- glm(
-      as.formula(paste(outcome, "~", pred_name, "+ Statins + Supplements + Gender + Country + z_Age")),
-      data = df_pair, 
-      family = Gamma(link = "log")
-    )
-    
-    sim_resid <- simulateResiduals(model, n = 1000, plot = FALSE)
-    
-    tibble(
-      outcome = outcome,
-      predictor = pred_name,
-      n = nrow(df_pair),
-      uniformity_p = testUniformity(sim_resid, plot = FALSE)$p.value,
-      dispersion_p = testDispersion(sim_resid, plot = FALSE)$p.value,
-      dispersion_stat = testDispersion(sim_resid, plot = FALSE)$statistic,
-      outlier_p = testOutliers(sim_resid, plot = FALSE)$p.value
-    )
-  })
-}
+# 10.2. DHARMa Diagnostics
+# Run on one representative predictor per outcome
+pred_name <- risk_factor_predictors[1]
 
-dharma_results <- test_dharma_per_outcome()
+dharma_results <- map_dfr(outcomes, function(outcome) {
+  key <- paste(pred_name, outcome, sep = "___")
+  model <- all_models[[key]]
+  
+  sim_resid <- simulateResiduals(model, n = 1000, plot = FALSE)
+  
+  tibble(
+    outcome        = outcome,
+    predictor      = pred_name,
+    n              = nrow(model$data),
+    uniformity_p   = testUniformity(sim_resid, plot = FALSE)$p.value,
+    dispersion_p   = testDispersion(sim_resid, plot = FALSE)$p.value,
+    dispersion_stat = testDispersion(sim_resid, plot = FALSE)$statistic,
+    outlier_p      = testOutliers(sim_resid, plot = FALSE)$p.value
+  )
+})
 
 print("DHARMa Diagnostics by Outcome (Age-Adjusted):")
 print(dharma_results)
 
-# ─── 3. Combined Summary Table ───────────────────────────────────────────────
+# 10.3. Combined Summary Table
 diagnostics_summary <- deviance_summary %>%
   left_join(
     dharma_results %>% select(outcome, uniformity_p, dispersion_stat, dispersion_p, outlier_p),
@@ -614,25 +573,22 @@ diagnostics_summary <- deviance_summary %>%
   ) %>%
   mutate(
     outcome_label = case_when(
-      outcome == "QRISK3_risk" ~ "QRISK3",
+      outcome == "QRISK3_risk"  ~ "QRISK3",
       outcome == "SCORE2_score" ~ "SCORE2",
-      outcome == "ascvd_10y" ~ "ASCVD",
-      outcome == "frs_10y" ~ "Framingham"
+      outcome == "ascvd_10y"    ~ "ASCVD",
+      outcome == "frs_10y"      ~ "Framingham"
     )
   ) %>%
-  select(outcome_label, n_models, median_dev_ratio, 
+  select(outcome_label, n_models, median_dev_ratio,
          uniformity_p, dispersion_stat, dispersion_p, outlier_p)
 
 print("Combined Model Diagnostics (Age-Adjusted):")
 print(diagnostics_summary)
 
-# Save results
 write_csv(deviance_summary, "deviance_summary_age_adj.csv")
 write_csv(dharma_results, "dharma_diagnostics_age_adj.csv")
 write_csv(diagnostics_summary, "combined_diagnostics_summary_age_adj.csv")
 
-# ─── Save Diagnostics ────────────────────────────────────────────────────────
-saveRDS(deviance_all,         file.path(incremental_dir, "deviance_all_age_adj.rds"))
-saveRDS(dharma_results,       file.path(incremental_dir, "dharma_results_age_adj.rds"))
-saveRDS(diagnostics_summary,  file.path(incremental_dir, "diagnostics_summary_age_adj.rds"))
-cat("Diagnostics saved.\n")
+saveRDS(deviance_all,        file.path(incremental_dir, "deviance_all_age_adj.rds"))
+saveRDS(dharma_results,      file.path(incremental_dir, "dharma_results_age_adj.rds"))
+saveRDS(diagnostics_summary, file.path(incremental_dir, "diagnostics_summary_age_adj.rds"))
