@@ -23,10 +23,10 @@ Participant-level data from the CoDiet cohort cannot be shared publicly. This re
   *Note:* QRISK3 was calculated separately from the other risk scores, as it was the first score implemented in the project.
 
 - **ASCVD, SCORE2, Framingham**  
-  Script: [`Cardiovascular_RiskScore_Calculation.R`](H2_CardiovascularRisk/Cardiovascular_RiskScore_Calculation.R)
+  Script: [`Cardiovascular_RiskScore_Calculations.R`](H2_CardiovascularRisk/Cardiovascular_RiskScore_Calculations.R)
 
 - **Figures**   
-  All figures presented in Chapter 3.1 (*Cardiovascular Risk Scores*) were generated within [`Cardiovascular_RiskScore_Calculation.R`](H2_CardiovascularRisk/Cardiovascular_RiskScore_Calculation.R).
+  All figures presented in Chapter 3.1 (*Cardiovascular Risk Scores*) were generated within [`Cardiovascular_RiskScore_Calculations.R`](H2_CardiovascularRisk/Cardiovascular_RiskScore_Calculations.R).
     
 ### Predictor Preparation
 Preprocessing of predictor domains used for GLM analysis, machine learning comparison, and Elastic Net modelling was conducted in the following scripts:
@@ -60,7 +60,7 @@ The same analysis, additionally adjusting for age as a fixed effect, was conduct
 
 ### ML Model Comparison
 
-The ML comparison used in the thesis is implemented in [`ML_comp_parameter_tuned.R`](H2_CardiovascularRisk/ML_comp_parameter_tuned.R).  
+The ML comparison used in the thesis is implemented in [`ML_comp_paramter_tuned.R`](H2_CardiovascularRisk/ML_comp_paramter_tuned.R).  
 An earlier exploratory comparison using a hold-out subset of 20 participants (not included in the thesis) is implemented in: [`tidymodels_comparison.R`](H2_CardiovascularRisk/tidymodels_comparison.R).
 
 
