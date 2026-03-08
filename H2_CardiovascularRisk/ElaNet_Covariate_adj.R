@@ -1555,3 +1555,119 @@ fig_spb <- create_combined_figure_score_plus_block(
 ### final save
 qs_save(results_all, save_output("elastic_net_all_results.qs2"))
 saveRDS(results_all, save_output("elastic_net_all_results.rds"))
+
+# ============================================
+# poster figure
+# ============================================
+
+# Make sure we have everything
+fold_data <- extract_per_fold_data(importance_results_full)
+aggregated_df <- importance_results_full$aggregated
+
+score_colours <- c("ASCVD" = "#F8766D", "Framingham" = "#8AAD40", "QRISK3" = "#4DB8B0", "SCORE2" = "#C77CFF")
+cvd_order <- c("ASCVD", "Framingham", "QRISK3", "SCORE2")
+
+score_specific_stems <- c("Sex", "Age", "EthnicityCodeQRISK3", "SmokingStatusQRISK3", "diabetes2", "Diabetes",
+                          "Weight_kg", "Height_cm", "blood_pressure_treatment", "Severe_mental_illness",
+                          "ratio_chol_hdl", "systolic", "townsend", "race_ascvd",
+                          "mean_Total_Cholesterol_mg_dl", "mean_HDL_mg_dl", "mean_LDL_mg_dl", "Risk.region")
+escaped_stems <- gsub("\\.", "\\\\.", score_specific_stems)
+score_specific_regex <- paste0("^(", paste(escaped_stems, collapse = "|"), ")")
+
+# Row 1: Full predictor set (all features including score-specific)
+panel_all <- build_importance_panel(fold_data, coefficient_directions_full, aggregated_df,
+                                    "all_data", "score_plus_block", score_colours, cvd_order,
+                                    remove_score_specific = FALSE)
+
+# Row 2: Clinical measurements + Body composition (block-specific features only)
+panel_clinical <- build_importance_panel(fold_data, coefficient_directions_full, aggregated_df,
+                                         "clinical_risk_factors", "score_plus_block", score_colours, cvd_order,
+                                         remove_score_specific = TRUE, score_specific_regex = score_specific_regex)
+
+panel_body <- build_importance_panel(fold_data, coefficient_directions_full, aggregated_df,
+                                     "body_composition", "score_plus_block", score_colours, cvd_order,
+                                     remove_score_specific = TRUE, score_specific_regex = score_specific_regex)
+
+# Row 3: Sociodemographic + Urine NMR
+panel_socio <- build_importance_panel(fold_data, coefficient_directions_full, aggregated_df,
+                                      "sociodemographics_lifestyle", "score_plus_block", score_colours, cvd_order,
+                                      remove_score_specific = TRUE, score_specific_regex = score_specific_regex)
+
+panel_urine <- build_importance_panel(fold_data, coefficient_directions_full, aggregated_df,
+                                      "urine_nmr", "score_plus_block", score_colours, cvd_order,
+                                      remove_score_specific = TRUE, score_specific_regex = score_specific_regex)
+
+# Row 4: Fatty acids + Lipids
+panel_fa <- build_importance_panel(fold_data, coefficient_directions_full, aggregated_df,
+                                   "fatty_acids", "score_plus_block", score_colours, cvd_order,
+                                   remove_score_specific = TRUE, score_specific_regex = score_specific_regex)
+
+panel_lipids <- build_importance_panel(fold_data, coefficient_directions_full, aggregated_df,
+                                       "lipids", "score_plus_block", score_colours, cvd_order,
+                                       remove_score_specific = TRUE, score_specific_regex = score_specific_regex)
+
+# Shared y-limits
+ylim_all <- c(-0.5, ceiling((panel_all$y_range[2] + 0.05) * 10) / 10)
+ylim_blocks <- c(-0.25, 0.25)
+
+# Build plots with coord_cartesian and tags
+p_all <- panel_all$plot + coord_cartesian(ylim = ylim_all, clip = "off") +
+  labs(tag = "A") + theme(plot.tag = element_text(face = "bold", size = 14))
+
+p_clinical <- panel_clinical$plot + coord_cartesian(ylim = ylim_blocks, clip = "off") +
+  labs(tag = "B") + theme(plot.tag = element_text(face = "bold", size = 14))
+p_body <- panel_body$plot + coord_cartesian(ylim = ylim_blocks, clip = "off") +
+  labs(tag = "C", y = NULL) + theme(plot.tag = element_text(face = "bold", size = 14))
+
+p_socio <- panel_socio$plot + coord_cartesian(ylim = ylim_blocks, clip = "off") +
+  labs(tag = "D") + theme(plot.tag = element_text(face = "bold", size = 14))
+p_urine <- panel_urine$plot + coord_cartesian(ylim = ylim_blocks, clip = "off") +
+  labs(tag = "E", y = NULL) + theme(plot.tag = element_text(face = "bold", size = 14))
+
+p_fa <- panel_fa$plot + coord_cartesian(ylim = ylim_blocks, clip = "off") +
+  labs(tag = "F") + theme(plot.tag = element_text(face = "bold", size = 14))
+p_lipids <- panel_lipids$plot + coord_cartesian(ylim = ylim_blocks, clip = "off") +
+  labs(tag = "G", y = NULL) + theme(plot.tag = element_text(face = "bold", size = 14))
+
+# Shared legend
+dummy_data <- tibble(x = 1:4, y = 1:4, cvd_label = factor(cvd_order, levels = cvd_order))
+legend_plot <- ggplot(dummy_data, aes(x, y, fill = cvd_label)) + geom_col() +
+  scale_fill_manual(values = score_colours, limits = cvd_order, name = "CVD Risk Score", drop = FALSE) +
+  guides(fill = guide_legend(nrow = 1)) +
+  theme(legend.position = "bottom", 
+        legend.title = element_text(face = "bold", size = 16),
+        legend.text = element_text(size = 14),
+        legend.key.size = unit(0.6, "cm"))
+shared_legend <- cowplot::get_legend(legend_plot)
+
+# Width ratios for paired rows (proportional to feature count)
+w_r2 <- c(panel_clinical$n_features, panel_body$n_features)
+w_r3 <- c(panel_socio$n_features, panel_urine$n_features)
+w_r4 <- c(panel_fa$n_features, panel_lipids$n_features)
+
+# Assemble: tall narrow layout
+poster_importance <- (p_all) /
+  (p_clinical | p_body) /
+  (p_socio | p_urine) /
+  (p_fa | p_lipids) /
+  wrap_elements(shared_legend) +
+  plot_layout(
+    heights = c(1.2, 0.6, 0.6, 0.6, 0.08),
+    widths = list(NULL, w_r2, w_r3, w_r4, NULL)
+  )
+
+row2 <- (p_clinical | p_body) + plot_layout(widths = c(panel_clinical$n_features, panel_body$n_features))
+row3 <- (p_socio | p_urine) + plot_layout(widths = c(panel_socio$n_features, panel_urine$n_features))
+row4 <- (p_fa | p_lipids) + plot_layout(widths = c(panel_fa$n_features, panel_lipids$n_features))
+
+poster_importance <- p_all / row2 / row3 / row4 / wrap_elements(shared_legend) +
+  plot_layout(heights = c(1.2, 0.6, 0.6, 0.6, 0.12))
+
+ggsave(
+  filename = file.path(figures_path, "importance_poster.png"),
+  plot = poster_importance,
+  width = 10,
+  height = 16,
+  dpi = 600,
+  bg = "white"
+)
