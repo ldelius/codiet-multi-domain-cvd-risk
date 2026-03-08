@@ -13,6 +13,7 @@ library(patchwork)
 library(flextable)
 library(DHARMa)
 library(readxl)
+library(officer)
 
 set.seed(42)
 
@@ -481,6 +482,188 @@ individual_exp <- title_b / p_b_cont +
 
 ggsave("exploratory_heatmap_3plus_scores_split.png", individual_exp,
        width = 12, height = n_b_cont * 0.4 + 3, dpi = 300)
+
+# ============================================
+# FDR-significant plot adjusted for poster presentation
+# ============================================
+
+# Update predictor set names
+rename_predictor_sets_poster <- function(predictor_set) {
+  case_when(
+    predictor_set == "Body composition"  ~ "Body\nComposition",
+    predictor_set == "Fatty acids"       ~ "Fatty\nAcids",
+    predictor_set == "REDCap factors"    ~ "Sociodemographic\n& Lifestyle",
+    predictor_set == "REDCap numeric"    ~ "Sociodemographic\n& Lifestyle",
+    predictor_set == "Risk factors"      ~ "Clinical\nMeasures",
+    predictor_set == "Lipids"            ~ "Lipid\nSpecies",
+    predictor_set == "Urine NMR"        ~ "Urinary\nMetabolites",
+    TRUE ~ predictor_set
+  )
+}
+
+# Updated renaming
+rename_predictors_poster <- function(term_plot) {
+  case_when(
+    term_plot == "z_ecw_tbw"                      ~ "ECW/TBW",
+    term_plot == "z_mean_hrt"                      ~ "Heart rate",
+    term_plot == "z_ecm_bcm"                       ~ "ECM/BCM",
+    term_plot == "z_rbc_22_4n_6"                   ~ "RBC adrenic acid",
+    term_plot == "z_rbc_dpa_22_5n3"                ~ "RBC docosapentaenoic acid (22:5n-3)",
+    term_plot == "z_rbc_eicosadienoic_20_2n6"      ~ "RBC eicosadienoic acid (20:2n-6)",
+    term_plot == "z_rbc_epa_20_5n3"                ~ "RBC eicosapentaenoic acid (20:5n-3)",
+    term_plot == "z_pe_o_19_1_20_5"                ~ "PE-O (19:1/20:5)",
+    term_plot == "naps_during_dayyes"              ~ "Daytime naps",
+    term_plot == "Living_StatusLiving with a partner" ~ "Living with partner",
+    term_plot == "Employment_StatusRetired"         ~ "Retired",
+    term_plot == "z_AGE.reader"                    ~ "AGE Reader",
+    term_plot == "z_Trigonelline"                   ~ "Trigonelline",
+    term_plot == "z_Hba1C"                         ~ "HbA1c",
+    term_plot == "z_ALT.unit.L"                    ~ "Alanine aminotransferase (ALT)",
+    term_plot == "z_LDL.mg.dl"                     ~ "LDL cholesterol",
+    term_plot == "z_3_hydroxybutyric_acid"         ~ "3-Hydroxybutyric acid",
+    term_plot == "z_hippuric_acid"                 ~ "Hippuric acid",
+    TRUE ~ term_plot
+  )
+}
+
+# Rebuild panel data with new strip labels
+heatmap_data_poster <- all_results_glm %>%
+  filter(!is.na(estimate)) %>%
+  mutate(
+    log_effect      = log(estimate),
+    is_fdr_sig      = p.adjusted < 0.05,
+    outcome         = rename_outcomes(outcome),
+    predictor_set   = rename_predictor_sets_poster(predictor_set),
+    term_plot_clean = rename_predictors_poster(term_plot),
+    is_categorical  = grepl("Sociodemographic", predictor_set)
+  )
+
+fdr_sig_terms_poster <- heatmap_data_poster %>%
+  filter(is_fdr_sig) %>% pull(term_plot_clean) %>% unique()
+
+panel_a_cat_p  <- heatmap_data_poster %>% filter(term_plot_clean %in% fdr_sig_terms_poster, is_categorical)
+panel_a_cont_p <- heatmap_data_poster %>% filter(term_plot_clean %in% fdr_sig_terms_poster, !is_categorical)
+
+# Recompute ordering
+order_a_cat_p <- panel_a_cat_p %>%
+  filter(is_fdr_sig) %>%
+  group_by(term_plot_clean) %>%
+  summarise(n_sig = n(), mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
+  arrange(desc(n_sig), desc(mean_effect)) %>%
+  pull(term_plot_clean)
+
+order_a_cont_p <- panel_a_cont_p %>%
+  filter(is_fdr_sig) %>%
+  group_by(term_plot_clean, predictor_set) %>%
+  summarise(n_sig = n(), mean_effect = mean(abs(log_effect)), .groups = "drop") %>%
+  arrange(predictor_set, desc(n_sig), desc(mean_effect)) %>%
+  pull(term_plot_clean)
+
+# Colour scales with oob squish
+max_abs_cont_p <- max(abs(panel_a_cont_p$log_effect), na.rm = TRUE)
+max_abs_cat_p  <- max(abs(panel_a_cat_p$log_effect), na.rm = TRUE)
+
+fill_cont_p <- scale_fill_gradient2(
+  low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
+  name = "log(Rate Ratio)",
+  limits = c(-max_abs_cont_p, max_abs_cont_p),
+  oob = scales::squish
+)
+
+fill_cat_p <- scale_fill_gradient2(
+  low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
+  name = "log(Rate Ratio)",
+  limits = c(-max_abs_cat_p, max_abs_cat_p),
+  oob = scales::squish
+)
+
+# Force outcome order
+outcome_order <- c("ASCVD", "Framingham", "QRISK3", "SCORE2")
+
+panel_a_cont_p <- panel_a_cont_p %>% mutate(outcome = factor(outcome, levels = outcome_order))
+panel_a_cat_p  <- panel_a_cat_p  %>% mutate(outcome = factor(outcome, levels = outcome_order))
+
+# Theme with smaller text, tighter vertical spacing
+theme_heatmap_poster <- theme_minimal(base_size = 11) +
+  theme(
+    axis.text.y      = element_text(size = 10),
+    strip.text.y     = element_blank(),
+    strip.placement  = "outside",
+    panel.grid       = element_blank(),
+    panel.spacing    = unit(0.4, "lines"),
+    legend.position    = "right",
+    legend.title       = element_text(size = 5),
+    legend.text        = element_text(size = 5),
+    legend.key.height  = unit(0.4, "cm"),
+    legend.key.width   = unit(0.25, "cm"),
+    legend.margin      = margin(0, 0, 0, 0),
+    legend.box.margin  = margin(0, 0, 0, 0)
+  )
+
+# Continuous panel
+p_poster_cont <- ggplot(panel_a_cont_p,
+                        aes(x = outcome,
+                            y = factor(term_plot_clean, levels = rev(order_a_cont_p)),
+                            fill = log_effect)) +
+  geom_tile(colour = "white", linewidth = 0.5, width = 1) +
+  geom_text(data = panel_a_cont_p %>% filter(is_fdr_sig),
+            aes(label = "*"), size = 6, vjust = 0.75, colour = "black") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  scale_x_discrete(expand = c(0, 0.1)) +
+  scale_y_discrete(expand = c(0, 0.1)) +
+  scale_fill_gradient2(
+    low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
+    name = "Continuous\nlog(RR)",
+    limits = c(-max_abs_cont_p, max_abs_cont_p),
+    oob = scales::squish
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_heatmap_poster +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y  = element_text(size = 8, angle = 45, hjust = 1),  # predictor names
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin  = margin(2, 5, 6, 5)
+  )
+
+# Categorical panel
+p_poster_cat <- ggplot(panel_a_cat_p,
+                       aes(x = outcome,
+                           y = factor(term_plot_clean, levels = rev(order_a_cat_p)),
+                           fill = log_effect)) +
+  geom_tile(colour = "white", linewidth = 0.5, width = 1) +
+  geom_text(data = panel_a_cat_p %>% filter(is_fdr_sig),
+            aes(label = "*"), size = 6, vjust = 0.75, colour = "black") +
+  facet_grid(predictor_set ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  scale_x_discrete(expand = c(0, 0.1)) +
+  scale_y_discrete(expand = c(0, 0.1)) +
+  scale_fill_gradient2(
+    low = "#0072B2", mid = "white", high = "#D55E00", midpoint = 0,
+    name = "Categorical\nlog(RR)",
+    limits = c(-max_abs_cat_p, max_abs_cat_p),
+    oob = scales::squish
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_heatmap_poster +
+  theme(
+    axis.title.y = element_blank(),
+    axis.text.y  = element_text(size = 8, angle = 45, hjust = 1),  # predictor names
+    axis.text.x  = element_text(size = 8, angle = 25, hjust = 1),  # ASCVD, Framingham...
+    plot.margin  = margin(6, 5, 5, 5)
+  )
+
+poster_fdr <- p_poster_cont / p_poster_cat +
+  plot_layout(heights = c(n_a_cont_p, n_a_cat_p))
+
+ggsave(
+  filename = file.path(figures_path, "heatmap_FDR_poster.tiff"),
+  plot     = poster_fdr,
+  width    = 4,
+  height   = (n_a_cont_p + n_a_cat_p) * 0.2 + 2,
+  dpi      = 600,
+  compression = "lzw"
+)
 
 # ============================================
 # 10. Supplementary tables
