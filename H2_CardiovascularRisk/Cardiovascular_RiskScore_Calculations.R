@@ -534,6 +534,52 @@ ggsave(
 )
 
 ###########################################################################
+# Violin plot only for poster presentation
+###########################################################################
+plot_A_poster <- ggplot(df_long, aes(x = score_type, y = risk)) +
+  geom_violin(aes(fill = score_type), alpha = 0.4, colour = NA) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, alpha = 0.8) +
+  geom_line(aes(group = PatientID), colour = "black", alpha = 0.25) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_fill_manual(
+    values = c(
+      "ascvd_10y"    = "#F8766D",
+      "frs_10y"      = "#8AAD40",
+      "QRISK3_risk"  = "#4DB8B0",
+      "SCORE2_score" = "#C77CFF"
+    )
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "SCORE2_score" = "SCORE2",
+      "QRISK3_risk"  = "QRISK3",
+      "ascvd_10y"    = "ASCVD",
+      "frs_10y"      = "Framingham"
+    )
+  ) +
+  labs(
+    title = NULL,
+    x = NULL,
+    y = "10-year Risk (%)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    axis.text.x  = element_text(angle = 25, hjust = 1, size = 20),
+    axis.text.y  = element_text(size = 20),
+    axis.title.y = element_text(size = 24)
+  )
+
+ggsave(
+  filename = file.path(figures_path, "CVD_risk_violin_poster.tiff"),
+  plot     = plot_A_poster,
+  width    = 8,
+  height   = 7,
+  dpi      = 600,
+  compression = "lzw"
+)
+
+###########################################################################
 #. Supplementary Figure with CVD score input and outcomes
 ###########################################################################
 CVD_input_plus_outcome <- df_all_risk_scores %>%
