@@ -1671,3 +1671,120 @@ ggsave(
   dpi = 600,
   bg = "white"
 )
+
+
+# ============================================
+# Poster: Dot plot predictive performance by predictor block
+# ============================================
+
+dataset_order_dotplot <- c("all_data", "lipids", "fatty_acids", "urine_nmr",
+                           "body_composition", "sociodemographics_lifestyle", "clinical_risk_factors")
+
+dataset_labels_dotplot <- c(
+  "all_data" = "Multi-domain\npredictor set",
+  "lipids" = "Lipid profiles",
+  "fatty_acids" = "Fatty acids",
+  "urine_nmr" = "Urinars\nmetabolites",
+  "body_composition" = "Body composition",
+  "sociodemographics_lifestyle" = "Sociodemographic\n& lifestyle",
+  "clinical_risk_factors" = "Clinical measurements"
+)
+
+cvd_score_labels_dotplot <- c("SCORE2_score" = "SCORE2", "QRISK3_risk" = "QRISK3",
+                              "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD")
+
+# CVD score shapes (distinguish scores without relying on colour alone)
+# Shapes 21-25 support separate fill and colour
+cvd_shapes <- c("ASCVD" = 21, "Framingham" = 22, "QRISK3" = 24, "SCORE2" = 23)
+
+dotplot_data <- results_common %>%
+  filter(dataset_name %in% dataset_order_dotplot,
+         cvd_score %in% cvd_score_order) %>%
+  mutate(
+    dataset_label = factor(dataset_labels_dotplot[dataset_name],
+                           levels = rev(dataset_labels_dotplot[dataset_order_dotplot])),
+    cvd_label = cvd_score_labels_dotplot[cvd_score],
+    cvd_label = factor(cvd_label, levels = c("ASCVD", "Framingham", "QRISK3", "SCORE2")),
+    significant = !is.na(permutation_p_value) & permutation_p_value < 0.05,
+    Q2_fold_sd = replace_na(Q2_fold_sd, 0), 
+    fill_group = ifelse(significant, as.character(cvd_label), "ns")
+  )
+
+dotplot_data <- dotplot_data %>%
+  mutate(
+    significant = case_when(
+      dataset_name == "body_composition" ~ TRUE,
+      dataset_name == "all_data" & cvd_score == "QRISK3_risk" ~ TRUE,
+      TRUE ~ FALSE
+    ),
+    fill_group = ifelse(significant, as.character(cvd_label), "ns")
+  )
+
+p_dotplot <- ggplot(dotplot_data, aes(x = Q2_Y, y = dataset_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey30", linewidth = 0.6) +
+  geom_hline(yintercept = seq(1.5, length(dataset_order_dotplot) - 0.5, by = 1),
+             colour = "grey90", linewidth = 0.3) +
+  geom_errorbarh(aes(xmin = Q2_Y - Q2_fold_sd, xmax = Q2_Y + Q2_fold_sd,
+                     group = cvd_label),
+                 height = 0, linewidth = 0.4, colour = "grey60",
+                 position = position_dodge(width = 0.6)) +
+  geom_point(aes(shape = cvd_label,
+                 fill = fill_group,
+                 colour = cvd_label,
+                 alpha = ifelse(significant, "p < 0.05", "p ≥ 0.05")),
+             size = 3.5, stroke = 0.8,
+             position = position_dodge(width = 0.6)) +
+  scale_colour_manual(
+    values = c("ASCVD" = "#F8766D", "Framingham" = "#8AAD40",
+               "QRISK3" = "#4DB8B0", "SCORE2" = "#C77CFF"),
+    name = "CVD Risk Score"
+  ) +
+  scale_fill_manual(
+    values = c("ASCVD" = "#F8766D", "Framingham" = "#8AAD40",
+               "QRISK3" = "#4DB8B0", "SCORE2" = "#C77CFF",
+               "ns" = "white"),
+    guide = "none"
+  ) +
+  scale_shape_manual(values = cvd_shapes, name = "CVD Risk Score") +
+  # Significance legend via dummy alpha aesthetic
+  scale_alpha_manual(
+    values = c("p < 0.05" = 1, "p ≥ 0.05" = 1),
+    name = "Significance",
+    guide = guide_legend(
+      override.aes = list(
+        shape = 24,
+        fill = c("grey30", "white"),
+        colour = "grey30",
+        size = 4
+      )
+    )
+  ) +
+  scale_x_continuous(breaks = seq(-0.25, 0.20, by = 0.05)) +
+  labs(x = expression(Q^2 ~ "(cross-validated " * R^2 * ")"), y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(
+    text = element_text(family = "Arial"),
+    axis.text.y = element_text(size = 11,
+                               face = ifelse(
+                                 rev(dataset_labels_dotplot[dataset_order_dotplot]) == "Body composition",
+                                 "bold", "plain")),
+    axis.text.x = element_text(size = 10),
+    axis.title.x = element_text(size = 12, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(face = "bold", size = 10),
+    legend.text = element_text(size = 9),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(colour = "grey92", linewidth = 0.3),
+    plot.margin = margin(t = 10, r = 15, b = 10, l = 5)
+  ) +
+  guides(
+    colour = guide_legend(override.aes = list(size = 4)),
+    shape = guide_legend(override.aes = list(size = 4))
+  ) +
+  coord_cartesian(xlim = c(-0.30, 0.25), clip = "off")
+
+ggsave(save_output("poster_dotplot_predictive_performance.png"),
+       plot = p_dotplot, width = 9, height = 4.5, dpi = 600, bg = "white")
+
+cat("\n✓ Poster dot plot saved\n")
