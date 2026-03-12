@@ -1560,7 +1560,6 @@ saveRDS(results_all, save_output("elastic_net_all_results.rds"))
 # poster figure
 # ============================================
 
-# Make sure we have everything
 fold_data <- extract_per_fold_data(importance_results_full)
 aggregated_df <- importance_results_full$aggregated
 
@@ -1710,7 +1709,6 @@ dotplot_data <- results_common %>%
     fill_group = ifelse(significant, as.character(cvd_label), "ns")
   )
 
-# Override significance (permutations not run in this batch)
 dotplot_data <- dotplot_data %>%
   mutate(
     significant = case_when(
@@ -1789,13 +1787,10 @@ p_dotplot <- ggplot(dotplot_data, aes(x = Q2_Y, y = dataset_label)) +
 ggsave(save_output("poster_dotplot_predictive_performance.png"),
        plot = p_dotplot, width = 5, height = 6.5, dpi = 600, bg = "white")
 
-cat("\n✓ Poster dot plot saved\n")
-
-
 
 
 # ============================================
-# Poster: Body composition feature importance (standalone)
+# Poster: Body composition feature importance common predictor set
 # ============================================
 
 score_colours_poster <- c("ASCVD" = "#F8766D", "Framingham" = "#8AAD40", "QRISK3" = "#4DB8B0", "SCORE2" = "#C77CFF")
@@ -1883,7 +1878,7 @@ summary_body <- summary_body %>%
 
 n_features <- length(feature_levels)
 
-# Build x positions (no-gap grouped bars)
+# Build x positions
 bar_width <- 0.18
 gap_between_features <- 0.3
 position_rows <- list()
@@ -2209,7 +2204,7 @@ for (d in blocks) {
   domain_end <- current_x - gap_between
   domain_boundaries[[d]] <- c(start = domain_start, end = domain_end,
                               mid = (domain_start + domain_end) / 2)
-  current_x <- current_x + 0.3  # extra gap between domains
+  current_x <- current_x + 0.3
 }
 
 positions_bg <- bind_rows(pos_rows_bg) %>% mutate(cvd_label = factor(cvd_label, levels = cvd_order_fi))
@@ -2230,7 +2225,7 @@ domain_annot <- bind_rows(lapply(names(domain_boundaries), function(d) {
          label = domain_labels_fi[d])
 }))
 
-# Y position for domain labels (above the plot)
+# Y position for domain labels
 y_top_bg <- max(c(all_blocks$ymax, all_blocks$signed_mean), na.rm = TRUE) + 0.08
 
 p_bg <- ggplot() +
@@ -2287,9 +2282,3 @@ poster_fi_combined <- p_a / p_bg / wrap_elements(shared_legend_fi) +
 
 ggsave(save_output("poster_feature_importance_combined.png"),
        plot = poster_fi_combined, width = 12, height = 7, dpi = 600, bg = "white")
-
-cat("\n✓ Poster feature importance combined figure saved\n")
-
-
-
-cat("\n✓ Poster dot plot saved\n")
