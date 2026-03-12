@@ -1238,3 +1238,66 @@ if (nrow(all_best_params) > 0) {
 } else {
   cat("  No tuning results available for hyperparameter table\n")
 }
+
+# ============================================
+# figure for poster
+# ============================================
+library(tidyverse)
+library(patchwork)
+
+# Filter to score-specific only
+score_specific_data <- all_metrics %>%
+  filter(grepl("_specific", dataset))
+
+# Labels and ordering
+model_order <- c("elastic_net", "sparse_pls", "random_forest", "xgboost", "svm", "knn")
+model_labels <- c(elastic_net = "Elastic Net", sparse_pls = "Sparse PLS",
+                  random_forest = "Random Forest", xgboost = "XGBoost",
+                  svm = "SVM-RBF", knn = "k-NN")
+
+model_colors <- c("Elastic Net" = "#7D5A6A",
+                  "Sparse PLS" = "#A88992",
+                  "Random Forest" = "#957B72",
+                  "XGBoost" = "#B8A298",
+                  "SVM-RBF" = "#8C7E8A",
+                  "k-NN" = "#B3AAB0")
+
+cvd_score_labels <- c("ascvd_10y" = "ASCVD", "frs_10y" = "Framingham",
+                      "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2")
+cvd_order <- c("ASCVD", "Framingham", "QRISK3", "SCORE2")
+
+plot_data <- plot_data %>%
+  mutate(label = ifelse(is_best, sprintf("%.2f", q2_r2_ratio), ""))
+
+p_ratio <- ggplot(plot_data, aes(x = cvd_label, y = q2_r2_ratio, fill = model_label)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "grey40", linewidth = 0.4) +
+  geom_text(aes(label = label),
+            position = position_dodge(width = 0.85),
+            vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_manual(values = model_colors) +
+  scale_y_continuous(breaks = seq(0.5, 1.0, by = 0.1)) +
+  coord_cartesian(ylim = c(0.6, 1.07)) +
+  labs(y = expression(bold(Q^2 / R^2 ~ "Ratio")), x = NULL, fill = NULL) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Arial"),
+    legend.position = "bottom",
+    legend.text = element_text(size = 13),        # was 11
+    legend.title = element_text(size = 15, face = "bold"),  # was 13
+    axis.text.x = element_text(size = 15, face = "bold"),   # was 12
+    axis.text.y = element_text(size = 15),        # was 12
+    axis.title.y = element_text(size = 17, face = "bold"),  # was 14
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  guides(fill = guide_legend(nrow = 1, override.aes = list(size = 3)))
+
+ggsave(
+  filename = file.path(figures_path, "ml_q2r2_ratio_poster.tiff"),
+  plot = p_ratio,
+  width = 8,
+  height = 5.0,
+  dpi = 600,
+  compression = "lzw"
+)
