@@ -1676,25 +1676,25 @@ ggsave(
 # ============================================
 # Poster: Dot plot predictive performance by predictor block
 # ============================================
-
+library(ggnewscale)
 dataset_order_dotplot <- c("all_data", "lipids", "fatty_acids", "urine_nmr",
                            "body_composition", "sociodemographics_lifestyle", "clinical_risk_factors")
 
 dataset_labels_dotplot <- c(
-  "all_data" = "Multi-domain\npredictor set",
-  "lipids" = "Lipid profiles",
-  "fatty_acids" = "Fatty acids",
-  "urine_nmr" = "Urinars\nmetabolites",
-  "body_composition" = "Body composition",
-  "sociodemographics_lifestyle" = "Sociodemographic\n& lifestyle",
-  "clinical_risk_factors" = "Clinical measurements"
+  "all_data" = "Multi-Domain\nPredictor Set",
+  "lipids" = "Lipid Profiles",
+  "fatty_acids" = "Fatty Acids",
+  "urine_nmr" = "Urinary\nMetabolites",
+  "body_composition" = "Body Composition",
+  "sociodemographics_lifestyle" = "Sociodemographic\n& Lifestyle",
+  "clinical_risk_factors" = "Clinical Measurements"
 )
+
+cvd_score_order <- c("ascvd_10y", "frs_10y", "QRISK3_risk", "SCORE2_score")
 
 cvd_score_labels_dotplot <- c("SCORE2_score" = "SCORE2", "QRISK3_risk" = "QRISK3",
                               "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD")
 
-# CVD score shapes (distinguish scores without relying on colour alone)
-# Shapes 21-25 support separate fill and colour
 cvd_shapes <- c("ASCVD" = 21, "Framingham" = 22, "QRISK3" = 24, "SCORE2" = 23)
 
 dotplot_data <- results_common %>%
@@ -1706,10 +1706,11 @@ dotplot_data <- results_common %>%
     cvd_label = cvd_score_labels_dotplot[cvd_score],
     cvd_label = factor(cvd_label, levels = c("ASCVD", "Framingham", "QRISK3", "SCORE2")),
     significant = !is.na(permutation_p_value) & permutation_p_value < 0.05,
-    Q2_fold_sd = replace_na(Q2_fold_sd, 0), 
+    Q2_fold_sd = replace_na(Q2_fold_sd, 0),
     fill_group = ifelse(significant, as.character(cvd_label), "ns")
   )
 
+# Override significance (permutations not run in this batch)
 dotplot_data <- dotplot_data %>%
   mutate(
     significant = case_when(
@@ -1746,7 +1747,6 @@ p_dotplot <- ggplot(dotplot_data, aes(x = Q2_Y, y = dataset_label)) +
     guide = "none"
   ) +
   scale_shape_manual(values = cvd_shapes, name = "CVD Risk Score") +
-  # Significance legend via dummy alpha aesthetic
   scale_alpha_manual(
     values = c("p < 0.05" = 1, "p ≥ 0.05" = 1),
     name = "Significance",
@@ -1759,32 +1759,537 @@ p_dotplot <- ggplot(dotplot_data, aes(x = Q2_Y, y = dataset_label)) +
       )
     )
   ) +
-  scale_x_continuous(breaks = seq(-0.25, 0.20, by = 0.05)) +
+  scale_x_continuous(breaks = seq(-0.20, 0.20, by = 0.10)) +
   labs(x = expression(Q^2 ~ "(cross-validated " * R^2 * ")"), y = NULL) +
   theme_minimal(base_size = 12) +
   theme(
     text = element_text(family = "Arial"),
-    axis.text.y = element_text(size = 11,
-                               face = ifelse(
-                                 rev(dataset_labels_dotplot[dataset_order_dotplot]) == "Body composition",
-                                 "bold", "plain")),
+    axis.text.y = element_text(size = 11),
     axis.text.x = element_text(size = 10),
     axis.title.x = element_text(size = 12, face = "bold"),
-    legend.position = "right",
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.justification = "left",
+    legend.margin = margin(0, 0, 0, -110),
     legend.title = element_text(face = "bold", size = 10),
     legend.text = element_text(size = 9),
+    legend.spacing.y = unit(4, "pt"),
+    legend.box.spacing = unit(2, "pt"),
     panel.grid.major.y = element_blank(),
     panel.grid.minor = element_blank(),
     panel.grid.major.x = element_line(colour = "grey92", linewidth = 0.3),
     plot.margin = margin(t = 10, r = 15, b = 10, l = 5)
   ) +
   guides(
-    colour = guide_legend(override.aes = list(size = 4)),
-    shape = guide_legend(override.aes = list(size = 4))
+    colour = guide_legend(nrow = 1, override.aes = list(size = 4)),
+    shape = guide_legend(nrow = 1, override.aes = list(size = 4))
   ) +
   coord_cartesian(xlim = c(-0.30, 0.25), clip = "off")
 
 ggsave(save_output("poster_dotplot_predictive_performance.png"),
-       plot = p_dotplot, width = 9, height = 4.5, dpi = 600, bg = "white")
+       plot = p_dotplot, width = 5, height = 6.5, dpi = 600, bg = "white")
+
+cat("\n✓ Poster dot plot saved\n")
+
+
+
+
+# ============================================
+# Poster: Body composition feature importance (standalone)
+# ============================================
+
+score_colours_poster <- c("ASCVD" = "#F8766D", "Framingham" = "#8AAD40", "QRISK3" = "#4DB8B0", "SCORE2" = "#C77CFF")
+cvd_order_poster <- c("ASCVD", "Framingham", "QRISK3", "SCORE2")
+
+# Extract fold data and coefficient directions
+fold_data_body <- extract_per_fold_data(importance_results_common)
+aggregated_df_body <- importance_results_common$aggregated
+coef_directions_body <- extract_coefficient_directions(results_common)
+
+# Filter to body composition only
+plot_data_body <- fold_data_body %>%
+  filter(dataset_name == "body_composition") %>%
+  left_join(coef_directions_body %>%
+              filter(dataset_name == "body_composition") %>%
+              select(cvd_score, feature, direction),
+            by = c("cvd_score", "feature")) %>%
+  filter(!is.na(direction), direction != "Zero") %>%
+  mutate(
+    cvd_label = recode(cvd_score, "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                       "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+    cvd_label = factor(cvd_label, levels = cvd_order_poster)
+  ) %>%
+  filter(importance > 0)
+
+# Require feature present in >= 3 folds
+fold_counts <- plot_data_body %>%
+  group_by(feature, cvd_label) %>%
+  summarise(n_nonzero = n(), .groups = "drop")
+valid_combos <- fold_counts %>% filter(n_nonzero >= 3)
+plot_data_body <- plot_data_body %>% semi_join(valid_combos, by = c("feature", "cvd_label"))
+
+# Summarise across folds
+summary_body <- plot_data_body %>%
+  group_by(feature, cvd_label, direction) %>%
+  summarise(
+    mean_imp = mean(importance, na.rm = TRUE),
+    se_imp = sd(importance, na.rm = TRUE) / sqrt(sum(!is.na(importance))),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    signed_mean = ifelse(direction == "Risk-Increasing", mean_imp, -mean_imp),
+    ymin = ifelse(direction == "Risk-Increasing", mean_imp - se_imp, -(mean_imp + se_imp)),
+    ymax = ifelse(direction == "Risk-Increasing", mean_imp + se_imp, -(mean_imp - se_imp))
+  )
+
+# Significance from aggregated results
+sig_body <- aggregated_df_body %>%
+  filter(dataset_name == "body_composition") %>%
+  mutate(
+    cvd_label = recode(cvd_score, "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                       "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+    sig_star = case_when(
+      p_value_bh < 0.001 ~ "***",
+      p_value_bh < 0.01 ~ "**",
+      p_value_bh < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  select(feature, cvd_label, sig_star)
+
+summary_body <- summary_body %>%
+  left_join(sig_body, by = c("feature", "cvd_label")) %>%
+  mutate(sig_star = ifelse(is.na(sig_star), "", sig_star))
+
+# Order features: risk-increasing first (by max importance), then risk-decreasing
+feat_inc <- summary_body %>%
+  filter(direction == "Risk-Increasing") %>%
+  group_by(feature) %>%
+  summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+  arrange(desc(max_imp)) %>%
+  pull(feature)
+feat_dec <- summary_body %>%
+  filter(direction == "Risk-Decreasing") %>%
+  group_by(feature) %>%
+  summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+  arrange(desc(max_imp)) %>%
+  pull(feature)
+feature_levels <- c(feat_inc, setdiff(feat_dec, feat_inc))
+clean_levels <- clean_feature_name(feature_levels)
+
+summary_body <- summary_body %>%
+  filter(feature %in% feature_levels) %>%
+  mutate(feature_clean = factor(clean_feature_name(feature), levels = clean_levels))
+
+n_features <- length(feature_levels)
+
+# Build x positions (no-gap grouped bars)
+bar_width <- 0.18
+gap_between_features <- 0.3
+position_rows <- list()
+current_x <- 1
+feature_centers <- numeric(n_features)
+
+for (f_idx in seq_along(feature_levels)) {
+  feat <- feature_levels[f_idx]
+  scores_present <- summary_body %>%
+    filter(feature == feat) %>%
+    arrange(cvd_label) %>%
+    pull(cvd_label) %>%
+    as.character()
+  n_bars <- length(scores_present)
+  if (n_bars == 0) next
+  group_width <- n_bars * bar_width + (n_bars - 1) * 0.02
+  start_x <- current_x - group_width / 2 + bar_width / 2
+  feature_centers[f_idx] <- current_x
+  for (b_idx in seq_along(scores_present)) {
+    x_pos <- start_x + (b_idx - 1) * (bar_width + 0.02)
+    position_rows[[length(position_rows) + 1]] <- tibble(
+      feature = feat, cvd_label = scores_present[b_idx], x_pos = x_pos
+    )
+  }
+  current_x <- current_x + gap_between_features + group_width / 2 + bar_width
+}
+
+positions <- bind_rows(position_rows) %>%
+  mutate(cvd_label = factor(cvd_label, levels = cvd_order_poster))
+
+feature_tick_positions <- tibble(
+  feature = feature_levels,
+  feature_clean = factor(clean_levels, levels = clean_levels),
+  x_tick = feature_centers
+)
+
+# Join positions
+summary_body <- summary_body %>% left_join(positions, by = c("feature", "cvd_label"))
+
+# Star y positions
+summary_body <- summary_body %>%
+  mutate(star_y = ifelse(
+    direction == "Risk-Increasing",
+    ymax + 0.04,
+    ymin - 0.04
+  ))
+
+# Build plot
+p_body_poster <- ggplot() +
+  geom_col(data = summary_body,
+           aes(x = x_pos, y = signed_mean, fill = cvd_label),
+           width = bar_width, colour = "white", linewidth = 0.2) +
+  geom_errorbar(data = summary_body %>% filter(!is.na(se_imp) & se_imp > 0),
+                aes(x = x_pos, ymin = ymin, ymax = ymax),
+                width = bar_width * 0.5, linewidth = 0.4, colour = "grey30") +
+  geom_text(data = summary_body %>% filter(sig_star != ""),
+            aes(x = x_pos, y = star_y, label = sig_star),
+            size = 6, fontface = "bold", colour = "black") +
+  geom_hline(yintercept = 0, linetype = "solid", color = "grey30", linewidth = 0.5) +
+  scale_fill_manual(values = score_colours_poster, name = "CVD Risk Score",
+                    limits = cvd_order_poster, drop = FALSE) +
+  scale_x_continuous(breaks = feature_tick_positions$x_tick,
+                     labels = feature_tick_positions$feature_clean,
+                     expand = expansion(add = 0.5)) +
+  labs(x = NULL, y = expression(Delta ~ "MAE (signed by effect direction)")) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.05))) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    text = element_text(family = "Arial"),
+    axis.text.x = element_text(size = 15, angle = 30, hjust = 1, vjust = 1),  # was 12
+    axis.text.y = element_text(size = 14),    # was 11
+    axis.title.y = element_text(size = 16),   # was 13
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 13),  # was 10
+    legend.text = element_text(size = 12),    # was 9
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 25, r = 10, b = 5, l = 10)
+  ) +
+  guides(fill = guide_legend(nrow = 1))
+
+ggsave(save_output("poster_body_composition_importance.png"),
+       plot = p_body_poster, width = 7.5, height = 5, dpi = 600, bg = "white")
+
+cat("\n✓ Body composition importance plot saved\n")
+
+
+
+
+
+
+# ============================================
+# Poster: Feature importance (A on top, combined B-G below)
+# ============================================
+
+feature_display_names["systolic"] <- "Systolic Blood Pressure"
+
+score_colours_fi <- c("ASCVD" = "#F8766D", "Framingham" = "#8AAD40", "QRISK3" = "#4DB8B0", "SCORE2" = "#C77CFF")
+cvd_order_fi <- c("ASCVD", "Framingham", "QRISK3", "SCORE2")
+
+fold_data_fi <- extract_per_fold_data(importance_results_full)
+aggregated_df_fi <- importance_results_full$aggregated
+coef_directions_fi <- extract_coefficient_directions(results_score_plus_blocks)
+
+score_specific_stems <- c("Sex", "Age", "EthnicityCodeQRISK3", "SmokingStatusQRISK3", "diabetes2", "Diabetes",
+                          "Weight_kg", "Height_cm", "blood_pressure_treatment", "Severe_mental_illness",
+                          "ratio_chol_hdl", "systolic", "townsend", "race_ascvd",
+                          "mean_Total_Cholesterol_mg_dl", "mean_HDL_mg_dl", "mean_LDL_mg_dl", "Risk.region")
+escaped_stems <- gsub("\\.", "\\\\.", score_specific_stems)
+score_specific_regex <- paste0("^(", paste(escaped_stems, collapse = "|"), ")")
+
+domain_labels_fi <- c(
+  "body_composition" = "Body\nComposition",
+  "clinical_risk_factors" = "Clinical\nMeasurements",
+  "sociodemographics_lifestyle" = "Sociodemographic\n& Lifestyle",
+  "fatty_acids" = "Fatty\nAcids",
+  "urine_nmr" = "Urinary\nMetabolites",
+  "lipids" = "Lipid\nProfiles"
+)
+
+# ---- Helper: process one block ----
+process_block_fi <- function(block_name, fold_data, coef_directions, aggregated_df,
+                             cvd_order, remove_ss = TRUE, ss_regex = NULL) {
+  plot_data <- fold_data %>%
+    filter(grepl(paste0("_specific\\+", block_name, "$"), dataset_name))
+  if (nrow(plot_data) == 0) return(NULL)
+  if (remove_ss && !is.null(ss_regex)) {
+    plot_data <- plot_data %>% filter(!grepl(ss_regex, feature))
+    if (nrow(plot_data) == 0) return(NULL)
+  }
+  plot_data <- plot_data %>%
+    left_join(coef_directions %>% select(cvd_score, dataset_name, feature, direction),
+              by = c("cvd_score", "dataset_name", "feature")) %>%
+    filter(!is.na(direction), direction != "Zero") %>%
+    mutate(cvd_label = recode(cvd_score, "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                              "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+           cvd_label = factor(cvd_label, levels = cvd_order)) %>%
+    filter(importance > 0)
+  fold_counts <- plot_data %>% group_by(feature, cvd_label) %>%
+    summarise(n_nonzero = n(), .groups = "drop")
+  valid_combos <- fold_counts %>% filter(n_nonzero >= 3)
+  plot_data <- plot_data %>% semi_join(valid_combos, by = c("feature", "cvd_label"))
+  if (nrow(plot_data) == 0) return(NULL)
+  
+  summary <- plot_data %>%
+    group_by(feature, cvd_label, direction) %>%
+    summarise(mean_imp = mean(importance, na.rm = TRUE),
+              se_imp = sd(importance, na.rm = TRUE) / sqrt(sum(!is.na(importance))),
+              .groups = "drop") %>%
+    mutate(signed_mean = ifelse(direction == "Risk-Increasing", mean_imp, -mean_imp),
+           ymin = ifelse(direction == "Risk-Increasing", mean_imp - se_imp, -(mean_imp + se_imp)),
+           ymax = ifelse(direction == "Risk-Increasing", mean_imp + se_imp, -(mean_imp - se_imp)))
+  
+  agg_filtered <- aggregated_df %>%
+    filter(grepl(paste0("_specific\\+", block_name, "$"), dataset_name))
+  sig_data <- agg_filtered %>%
+    mutate(cvd_label = recode(cvd_score, "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                              "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+           sig_star = case_when(p_value_bh < 0.001 ~ "***", p_value_bh < 0.01 ~ "**",
+                                p_value_bh < 0.05 ~ "*", TRUE ~ "")) %>%
+    select(feature, cvd_label, sig_star)
+  
+  summary <- summary %>%
+    left_join(sig_data, by = c("feature", "cvd_label")) %>%
+    mutate(sig_star = ifelse(is.na(sig_star), "", sig_star),
+           domain = block_name)
+  summary
+}
+
+# ---- Panel A: full predictor set ----
+panel_a_data <- fold_data_fi %>%
+  filter(grepl("_specific\\+all_data$", dataset_name)) %>%
+  left_join(coef_directions_fi %>% select(cvd_score, dataset_name, feature, direction),
+            by = c("cvd_score", "dataset_name", "feature")) %>%
+  filter(!is.na(direction), direction != "Zero") %>%
+  mutate(cvd_label = recode(cvd_score, "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                            "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+         cvd_label = factor(cvd_label, levels = cvd_order_fi)) %>%
+  filter(importance > 0)
+
+fold_counts_a <- panel_a_data %>% group_by(feature, cvd_label) %>%
+  summarise(n_nonzero = n(), .groups = "drop")
+valid_a <- fold_counts_a %>% filter(n_nonzero >= 3)
+panel_a_data <- panel_a_data %>% semi_join(valid_a, by = c("feature", "cvd_label"))
+
+summary_a <- panel_a_data %>%
+  group_by(feature, cvd_label, direction) %>%
+  summarise(mean_imp = mean(importance, na.rm = TRUE),
+            se_imp = sd(importance, na.rm = TRUE) / sqrt(sum(!is.na(importance))),
+            .groups = "drop") %>%
+  mutate(signed_mean = ifelse(direction == "Risk-Increasing", mean_imp, -mean_imp),
+         ymin = ifelse(direction == "Risk-Increasing", mean_imp - se_imp, -(mean_imp + se_imp)),
+         ymax = ifelse(direction == "Risk-Increasing", mean_imp + se_imp, -(mean_imp - se_imp)),
+         feature_clean = clean_feature_name(feature))
+
+sig_a <- aggregated_df_fi %>%
+  filter(grepl("_specific\\+all_data$", dataset_name)) %>%
+  mutate(cvd_label = recode(cvd_score, "QRISK3_risk" = "QRISK3", "SCORE2_score" = "SCORE2",
+                            "frs_10y" = "Framingham", "ascvd_10y" = "ASCVD"),
+         sig_star = case_when(p_value_bh < 0.001 ~ "***", p_value_bh < 0.01 ~ "**",
+                              p_value_bh < 0.05 ~ "*", TRUE ~ "")) %>%
+  select(feature, cvd_label, sig_star)
+
+summary_a <- summary_a %>%
+  left_join(sig_a, by = c("feature", "cvd_label")) %>%
+  mutate(sig_star = ifelse(is.na(sig_star), "", sig_star),
+         is_score_specific = grepl(score_specific_regex, feature))
+
+# Order Panel A features
+feat_inc_a <- summary_a %>% filter(direction == "Risk-Increasing") %>%
+  group_by(feature) %>% summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+  arrange(desc(max_imp)) %>% pull(feature)
+feat_dec_a <- summary_a %>% filter(direction == "Risk-Decreasing") %>%
+  group_by(feature) %>% summarise(max_imp = max(mean_imp), .groups = "drop") %>%
+  arrange(desc(max_imp)) %>% pull(feature)
+feature_levels_a <- c(feat_inc_a, setdiff(feat_dec_a, feat_inc_a))
+clean_levels_a <- clean_feature_name(feature_levels_a)
+
+summary_a <- summary_a %>%
+  filter(feature %in% feature_levels_a) %>%
+  mutate(feature_clean = factor(clean_feature_name(feature), levels = clean_levels_a))
+
+n_feat_a <- length(feature_levels_a)
+
+# Panel A x-positions
+bar_width <- 0.18
+gap_between <- 0.3
+pos_rows_a <- list(); current_x <- 1; centers_a <- numeric(n_feat_a)
+for (f_idx in seq_along(feature_levels_a)) {
+  feat <- feature_levels_a[f_idx]
+  scores_present <- summary_a %>% filter(feature == feat) %>% arrange(cvd_label) %>%
+    pull(cvd_label) %>% as.character()
+  n_bars <- length(scores_present); if (n_bars == 0) next
+  group_width <- n_bars * bar_width + (n_bars - 1) * 0.02
+  start_x <- current_x - group_width / 2 + bar_width / 2
+  centers_a[f_idx] <- current_x
+  for (b_idx in seq_along(scores_present)) {
+    x_pos <- start_x + (b_idx - 1) * (bar_width + 0.02)
+    pos_rows_a[[length(pos_rows_a) + 1]] <- tibble(feature = feat, cvd_label = scores_present[b_idx], x_pos = x_pos)
+  }
+  current_x <- current_x + gap_between + group_width / 2 + bar_width
+}
+positions_a <- bind_rows(pos_rows_a) %>% mutate(cvd_label = factor(cvd_label, levels = cvd_order_fi))
+ticks_a <- tibble(feature = feature_levels_a, feature_clean = factor(clean_levels_a, levels = clean_levels_a), x_tick = centers_a)
+ticks_a <- ticks_a %>% mutate(is_ss = grepl(score_specific_regex, feature),
+                              label_face = ifelse(is_ss, "bold", "plain"))
+
+summary_a <- summary_a %>% left_join(positions_a, by = c("feature", "cvd_label"))
+summary_a <- summary_a %>% mutate(star_y = ifelse(direction == "Risk-Increasing", ymax + 0.06, ymin - 0.06))
+
+p_a <- ggplot() +
+  geom_col(data = summary_a, aes(x = x_pos, y = signed_mean, fill = cvd_label),
+           width = bar_width, colour = "white", linewidth = 0.2) +
+  geom_errorbar(data = summary_a %>% filter(!is.na(se_imp) & se_imp > 0),
+                aes(x = x_pos, ymin = ymin, ymax = ymax),
+                width = bar_width * 0.5, linewidth = 0.4, colour = "grey30") +
+  geom_text(data = summary_a %>% filter(sig_star != ""),
+            aes(x = x_pos, y = star_y, label = sig_star),
+            size = 4, fontface = "bold", colour = "black") +
+  geom_hline(yintercept = 0, linetype = "solid", color = "grey30", linewidth = 0.5) +
+  scale_fill_manual(values = score_colours_fi, name = "CVD Risk Score",
+                    limits = cvd_order_fi, drop = FALSE) +
+  scale_x_continuous(breaks = ticks_a$x_tick, labels = ticks_a$feature_clean,
+                     expand = expansion(add = 0.5)) +
+  labs(x = NULL, y = expression(Delta ~ "MAE"), title = "Multi-Domain Predictors") +
+  theme_minimal(base_size = 11) +
+  theme(text = element_text(family = "Arial"),
+        axis.text.x = element_text(size = 12, angle = 30, hjust = 1, vjust = 1,
+                                   face = ticks_a$label_face),  # was 9
+        axis.text.y = element_text(size = 12),    # was 10
+        axis.title.y = element_text(size = 14),   # was 11
+        plot.title = element_text(size = 11, face = "plain", colour = "grey30"),  # was 9
+        legend.position = "none",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(t = 5, r = 8, b = 0, l = 8))
+
+# ---- Combined B-G panel ----
+blocks <- c("body_composition", "clinical_risk_factors", "sociodemographics_lifestyle",
+            "fatty_acids", "urine_nmr", "lipids")
+
+all_blocks <- bind_rows(lapply(blocks, function(b) {
+  process_block_fi(b, fold_data_fi, coef_directions_fi, aggregated_df_fi,
+                   cvd_order_fi, remove_ss = TRUE, ss_regex = score_specific_regex)
+}))
+
+all_blocks <- all_blocks %>%
+  mutate(feature_clean = clean_feature_name(feature),
+         domain_label = domain_labels_fi[domain],
+         domain_label = factor(domain_label, levels = unname(domain_labels_fi)))
+
+# Order features within domains
+block_feature_order <- all_blocks %>%
+  group_by(domain, feature) %>%
+  summarise(max_imp = max(abs(signed_mean)), .groups = "drop") %>%
+  arrange(domain, desc(max_imp))
+
+# Build x-positions with domain gaps
+pos_rows_bg <- list(); current_x <- 1; centers_bg <- numeric(0)
+feature_list_bg <- character(0); domain_boundaries <- list()
+
+for (d in blocks) {
+  feats_in_domain <- block_feature_order %>% filter(domain == d) %>% pull(feature)
+  if (length(feats_in_domain) == 0) next
+  domain_start <- current_x
+  
+  for (feat in feats_in_domain) {
+    scores_present <- all_blocks %>% filter(feature == feat, domain == d) %>%
+      arrange(cvd_label) %>% pull(cvd_label) %>% as.character()
+    n_bars <- length(scores_present); if (n_bars == 0) next
+    group_width <- n_bars * bar_width + (n_bars - 1) * 0.02
+    start_x <- current_x - group_width / 2 + bar_width / 2
+    centers_bg <- c(centers_bg, current_x)
+    feature_list_bg <- c(feature_list_bg, feat)
+    for (b_idx in seq_along(scores_present)) {
+      x_pos <- start_x + (b_idx - 1) * (bar_width + 0.02)
+      pos_rows_bg[[length(pos_rows_bg) + 1]] <- tibble(
+        feature = feat, cvd_label = scores_present[b_idx], x_pos = x_pos, domain = d)
+    }
+    current_x <- current_x + gap_between + group_width / 2 + bar_width
+  }
+  domain_end <- current_x - gap_between
+  domain_boundaries[[d]] <- c(start = domain_start, end = domain_end,
+                              mid = (domain_start + domain_end) / 2)
+  current_x <- current_x + 0.3  # extra gap between domains
+}
+
+positions_bg <- bind_rows(pos_rows_bg) %>% mutate(cvd_label = factor(cvd_label, levels = cvd_order_fi))
+clean_list_bg <- clean_feature_name(feature_list_bg)
+ticks_bg <- tibble(feature = feature_list_bg,
+                   feature_clean = clean_list_bg,
+                   x_tick = centers_bg)
+
+all_blocks <- all_blocks %>% left_join(positions_bg, by = c("feature", "cvd_label", "domain"))
+all_blocks <- all_blocks %>% mutate(star_y = ifelse(direction == "Risk-Increasing", ymax + 0.03, ymin - 0.03))
+
+# Domain label positions
+domain_annot <- bind_rows(lapply(names(domain_boundaries), function(d) {
+  tibble(domain = d,
+         x_mid = domain_boundaries[[d]]["mid"],
+         x_start = domain_boundaries[[d]]["start"] - 0.3,
+         x_end = domain_boundaries[[d]]["end"] + 0.1,
+         label = domain_labels_fi[d])
+}))
+
+# Y position for domain labels (above the plot)
+y_top_bg <- max(c(all_blocks$ymax, all_blocks$signed_mean), na.rm = TRUE) + 0.08
+
+p_bg <- ggplot() +
+  geom_col(data = all_blocks, aes(x = x_pos, y = signed_mean, fill = cvd_label),
+           width = bar_width, colour = "white", linewidth = 0.2) +
+  geom_errorbar(data = all_blocks %>% filter(!is.na(se_imp) & se_imp > 0),
+                aes(x = x_pos, ymin = ymin, ymax = ymax),
+                width = bar_width * 0.5, linewidth = 0.4, colour = "grey30") +
+  geom_text(data = all_blocks %>% filter(sig_star != ""),
+            aes(x = x_pos, y = star_y, label = sig_star),
+            size = 3.5, fontface = "bold", colour = "black") +
+  geom_hline(yintercept = 0, linetype = "solid", color = "grey30", linewidth = 0.5) +
+  # Domain labels on top
+  geom_text(data = domain_annot, aes(x = x_mid, y = y_top_bg, label = label),
+            size = 3.5, fontface = "plain", colour = "grey30", lineheight = 0.85) +  # was 3
+  # Domain separator lines
+  geom_segment(data = domain_annot %>% filter(row_number() > 1),
+               aes(x = x_start - 0.1, xend = x_start - 0.1,
+                   y = -Inf, yend = Inf),
+               linetype = "dashed", colour = "grey40", linewidth = 0.4) +
+  scale_fill_manual(values = score_colours_fi, name = "CVD Risk Score",
+                    limits = cvd_order_fi, drop = FALSE) +
+  scale_x_continuous(breaks = ticks_bg$x_tick, labels = ticks_bg$feature_clean,
+                     expand = expansion(add = c(1.5, 0.5))) +
+  labs(x = NULL, y = expression(Delta ~ "MAE")) +
+  theme_minimal(base_size = 11) +
+  theme(text = element_text(family = "Arial"),
+        axis.text.x = element_text(size = 11, angle = 30, hjust = 1, vjust = 1),  # was 8
+        axis.text.y = element_text(size = 12),    # was 10
+        axis.title.y = element_text(size = 14),   # was 11
+        plot.title = element_text(size = 11, face = "bold"),
+        legend.position = "none",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(t = 20, r = 8, b = 2, l = 8)) +
+  coord_cartesian(clip = "off")
+
+# ---- Shared legend ----
+dummy_legend_fi <- ggplot(data.frame(x = 1:4, y = 1:4,
+                                     cvd = factor(cvd_order_fi, levels = cvd_order_fi)),
+                          aes(x, y, fill = cvd)) +
+  geom_col() +
+  scale_fill_manual(values = score_colours_fi, name = "CVD Risk Score",
+                    limits = cvd_order_fi, drop = FALSE) +
+  guides(fill = guide_legend(nrow = 1)) +
+  theme(legend.position = "bottom",
+        legend.title = element_text(face = "bold", size = 13),  # was 9
+        legend.text = element_text(size = 12))  # was 8
+shared_legend_fi <- cowplot::get_legend(dummy_legend_fi)
+
+# ---- Combine ----
+poster_fi_combined <- p_a / p_bg / wrap_elements(shared_legend_fi) +
+  plot_layout(heights = c(1, 0.5, 0.08))
+
+ggsave(save_output("poster_feature_importance_combined.png"),
+       plot = poster_fi_combined, width = 12, height = 7, dpi = 600, bg = "white")
+
+cat("\n✓ Poster feature importance combined figure saved\n")
+
+
 
 cat("\n✓ Poster dot plot saved\n")
